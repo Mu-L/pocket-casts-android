@@ -2,8 +2,8 @@ package au.com.shiftyjelly.pocketcasts.discover.viewmodel
 
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.repositories.colors.ColorManager
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
@@ -23,8 +23,9 @@ import io.reactivex.rxkotlin.addTo
 import io.reactivex.rxkotlin.combineLatest
 import io.reactivex.rxkotlin.subscribeBy
 import io.reactivex.schedulers.Schedulers
-import timber.log.Timber
 import javax.inject.Inject
+import kotlinx.coroutines.rx2.rxMaybe
+import timber.log.Timber
 
 @HiltViewModel
 class PodcastListViewModel @Inject constructor(
@@ -33,7 +34,7 @@ class PodcastListViewModel @Inject constructor(
     val podcastManager: PodcastManager,
     val userManager: UserManager,
     val episodeManager: EpisodeManager,
-    val playbackManager: PlaybackManager
+    val playbackManager: PlaybackManager,
 ) : ViewModel() {
     val state: MutableLiveData<PodcastListViewState> = MutableLiveData()
     val disposables: CompositeDisposable = CompositeDisposable()
@@ -74,7 +75,7 @@ class PodcastListViewModel @Inject constructor(
                 },
                 onError = {
                     state.postValue(PodcastListViewState.Error(it))
-                }
+                },
             )
             .addTo(disposables)
     }
@@ -87,7 +88,7 @@ class PodcastListViewModel @Inject constructor(
                     .playbackStateRelay
                     .toFlowable(BackpressureStrategy.LATEST)
                     // ignore the episode progress
-                    .distinctUntilChanged { t1, t2 -> t1.episodeUuid == t2.episodeUuid && t1.isPlaying == t2.isPlaying }
+                    .distinctUntilChanged { t1, t2 -> t1.episodeUuid == t2.episodeUuid && t1.isPlaying == t2.isPlaying },
             )
             .map { (list, playbackState) ->
                 val updatedEpisodes = list.episodes?.map { episode -> episode.copy(isPlaying = playbackState.isPlaying && playbackState.episodeUuid == episode.uuid) }
@@ -111,8 +112,8 @@ class PodcastListViewModel @Inject constructor(
     }
 
     private fun addSubscriptionStateToFeed(feed: ListFeed): Flowable<ListFeed> {
-        return podcastManager.getSubscribedPodcastUuids().toFlowable() // Get the current subscribed list
-            .mergeWith(podcastManager.observePodcastSubscriptions()) // Get updated when it changes
+        return podcastManager.getSubscribedPodcastUuidsRxSingle().toFlowable() // Get the current subscribed list
+            .mergeWith(podcastManager.podcastSubscriptionsRxFlowable()) // Get updated when it changes
             .flatMap { subscribedList ->
                 val newPodcastList = feed.podcasts?.map { podcast ->
                     podcast.updateIsSubscribed(subscribedList.contains(podcast.uuid))
@@ -132,9 +133,13 @@ class PodcastListViewModel @Inject constructor(
             .observeOn(AndroidSchedulers.mainThread())
     }
 
-    fun findOrDownloadEpisode(discoverEpisode: DiscoverEpisode, success: (episode: Episode) -> Unit) {
-        podcastManager.findOrDownloadPodcastRx(discoverEpisode.podcast_uuid)
-            .flatMapMaybe { episodeManager.findByUuidRx(discoverEpisode.uuid) }
+    fun findOrDownloadEpisode(discoverEpisode: DiscoverEpisode, success: (episode: PodcastEpisode) -> Unit) {
+        podcastManager.findOrDownloadPodcastRxSingle(discoverEpisode.podcast_uuid)
+            .flatMapMaybe {
+                rxMaybe {
+                    episodeManager.findByUuid(discoverEpisode.uuid)
+                }
+            }
             .subscribeOn(Schedulers.io())
             .observeOn(AndroidSchedulers.mainThread())
             .subscribeBy(
@@ -145,17 +150,17 @@ class PodcastListViewModel @Inject constructor(
                 },
                 onError = { throwable ->
                     Timber.e(throwable)
-                }
+                },
             )
             .addTo(disposables)
     }
 
-    fun playEpisode(episode: Episode) {
-        playbackManager.playNow(episode, forceStream = true, playbackSource = AnalyticsSource.DISCOVER_PODCAST_LIST)
+    fun playEpisode(episode: PodcastEpisode) {
+        playbackManager.playNow(episode, forceStream = true, sourceView = SourceView.DISCOVER_PODCAST_LIST)
     }
 
     fun stopPlayback() {
-        playbackManager.stopAsync(playbackSource = AnalyticsSource.DISCOVER_PODCAST_LIST)
+        playbackManager.stopAsync(sourceView = SourceView.DISCOVER_PODCAST_LIST)
     }
 }
 

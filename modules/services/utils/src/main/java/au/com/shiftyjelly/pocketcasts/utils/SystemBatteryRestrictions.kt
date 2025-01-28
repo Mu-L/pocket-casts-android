@@ -8,16 +8,17 @@ import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
 import dagger.hilt.android.qualifiers.ApplicationContext
-import timber.log.Timber
 import javax.inject.Inject
+import timber.log.Timber
 
 class SystemBatteryRestrictions @Inject constructor(@ApplicationContext private val context: Context) {
 
-    enum class Status {
-        Unrestricted,
-        Optimized,
-        Restricted,
-        Other;
+    enum class Status(val analyticsValue: String) {
+        Unrestricted("unrestricted"),
+        Optimized("optimized"),
+        Restricted("restricted"),
+        Other("other"),
+        ;
         // "Other" occurs when battery use is unrestricted but background processing is restricted
         // The only way I know that users can get into this state is if the app is set to be restricted
         // and the user accepts the dialog from Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS
@@ -49,7 +50,7 @@ class SystemBatteryRestrictions @Inject constructor(@ApplicationContext private 
 
             return Status.get(
                 isIgnoringOptimizations = isIgnoringOptimizations,
-                isBackgroundRestricted = isBackgroundRestricted
+                isBackgroundRestricted = isBackgroundRestricted,
             )
         }
 
@@ -71,7 +72,7 @@ class SystemBatteryRestrictions @Inject constructor(@ApplicationContext private 
         if (status == Status.Restricted) {
             Timber.e(
                 "Improperly requesting that the user turn off battery optimization when their current " +
-                    "setting is $status. Use SystemBatteryOptimization::goToAppSettings prompt instead"
+                    "setting is $status. Use SystemBatteryOptimization::goToAppSettings prompt instead",
             )
         }
 

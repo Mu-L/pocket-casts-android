@@ -1,17 +1,18 @@
 package au.com.shiftyjelly.pocketcasts.analytics
 
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
+import au.com.shiftyjelly.pocketcasts.models.entity.EpisodeDownloadFailureStatistics
 import javax.inject.Inject
 import javax.inject.Singleton
 
 @Singleton
 class EpisodeAnalytics @Inject constructor(
-    private val analyticsTracker: AnalyticsTrackerWrapper,
+    private val analyticsTracker: AnalyticsTracker,
 ) {
     private val downloadEpisodeUuidQueue = mutableListOf<String>()
     private val uploadEpisodeUuidQueue = mutableListOf<String>()
 
-    fun trackEvent(event: AnalyticsEvent, source: AnalyticsSource, uuid: String) {
+    fun trackEvent(event: AnalyticsEvent, source: SourceView, uuid: String) {
         if (event == AnalyticsEvent.EPISODE_DOWNLOAD_QUEUED) {
             downloadEpisodeUuidQueue.add(uuid)
         } else if (event == AnalyticsEvent.EPISODE_UPLOAD_QUEUED) {
@@ -20,7 +21,7 @@ class EpisodeAnalytics @Inject constructor(
         analyticsTracker.track(event, AnalyticsProp.sourceAndUuidMap(source, uuid))
     }
 
-    fun trackEvent(event: AnalyticsEvent, uuid: String) {
+    fun trackEvent(event: AnalyticsEvent, uuid: String, source: SourceView? = null) {
         if (event == AnalyticsEvent.EPISODE_DOWNLOAD_FINISHED || event == AnalyticsEvent.EPISODE_DOWNLOAD_FAILED) {
             if (downloadEpisodeUuidQueue.contains(uuid)) {
                 downloadEpisodeUuidQueue.remove(uuid)
@@ -35,18 +36,30 @@ class EpisodeAnalytics @Inject constructor(
             }
         }
 
-        analyticsTracker.track(event, AnalyticsProp.uuidMap(uuid))
+        if (source != null) {
+            analyticsTracker.track(event, AnalyticsProp.sourceAndUuidMap(source, uuid))
+        } else {
+            analyticsTracker.track(event, AnalyticsProp.uuidMap(uuid))
+        }
     }
 
-    fun trackEvent(event: AnalyticsEvent, source: AnalyticsSource, toTop: Boolean) {
-        analyticsTracker.track(event, AnalyticsProp.sourceAndToTopMap(source, toTop))
+    fun trackEvent(
+        event: AnalyticsEvent,
+        source: SourceView,
+        toTop: Boolean,
+        episode: BaseEpisode,
+    ) {
+        analyticsTracker.track(
+            event,
+            AnalyticsProp.sourceAndToTopMap(source, toTop, episode),
+        )
     }
 
-    fun trackBulkEvent(event: AnalyticsEvent, source: AnalyticsSource, count: Int) {
+    fun trackBulkEvent(event: AnalyticsEvent, source: SourceView, count: Int) {
         analyticsTracker.track(event, AnalyticsProp.bulkMap(source, count))
     }
 
-    fun trackBulkEvent(event: AnalyticsEvent, source: AnalyticsSource, episodes: List<Playable>) {
+    fun trackBulkEvent(event: AnalyticsEvent, source: SourceView, episodes: List<BaseEpisode>) {
         if (event == AnalyticsEvent.EPISODE_BULK_DOWNLOAD_QUEUED) {
             downloadEpisodeUuidQueue.clear()
             downloadEpisodeUuidQueue.addAll(downloadEpisodeUuidQueue.union(episodes.map { it.uuid }))
@@ -56,11 +69,29 @@ class EpisodeAnalytics @Inject constructor(
 
     fun trackBulkEvent(
         event: AnalyticsEvent,
-        source: AnalyticsSource,
+        source: SourceView,
         count: Int,
         toTop: Boolean,
     ) {
         analyticsTracker.track(event, AnalyticsProp.bulkToTopMap(source, count, toTop))
+    }
+
+    fun trackEpisodeDownloadFailure(error: EpisodeDownloadError) {
+        if (downloadEpisodeUuidQueue.contains(error.episodeUuid)) {
+            downloadEpisodeUuidQueue.remove(error.episodeUuid)
+        } else {
+            return
+        }
+        analyticsTracker.track(AnalyticsEvent.EPISODE_DOWNLOAD_FAILED, error.toProperties())
+    }
+
+    fun trackStaleEpisodeDownloads(data: EpisodeDownloadFailureStatistics) {
+        val properties = buildMap {
+            put("failed_download_count", data.count)
+            data.newestTimestamp?.let { put("newest_failed_download", it.toString()) }
+            data.oldestTimestamp?.let { put("oldest_failed_download", it.toString()) }
+        }
+        analyticsTracker.track(AnalyticsEvent.EPISODE_DOWNLOAD_STALE, properties)
     }
 
     private object AnalyticsProp {
@@ -68,20 +99,24 @@ class EpisodeAnalytics @Inject constructor(
         private const val episode_uuid = "episode_uuid"
         private const val count = "count"
         private const val to_top = "to_top"
-        fun sourceAndUuidMap(eventSource: AnalyticsSource, uuid: String) =
+        fun sourceAndUuidMap(eventSource: SourceView, uuid: String) =
             mapOf(source to eventSource.analyticsValue, episode_uuid to uuid)
 
         fun uuidMap(uuid: String) = mapOf(episode_uuid to uuid)
-        fun sourceAndToTopMap(eventSource: AnalyticsSource, toTop: Boolean) =
-            mapOf(source to eventSource.analyticsValue, to_top to toTop)
+        fun sourceAndToTopMap(eventSource: SourceView, toTop: Boolean, episode: BaseEpisode) =
+            mapOf(
+                source to eventSource.analyticsValue,
+                to_top to toTop,
+                episode_uuid to episode.uuid,
+            )
 
-        fun bulkMap(eventSource: AnalyticsSource, count: Int) =
+        fun bulkMap(eventSource: SourceView, count: Int) =
             mapOf(source to eventSource.analyticsValue, this.count to count)
 
-        fun bulkToTopMap(eventSource: AnalyticsSource, count: Int, toTop: Boolean) = mapOf(
+        fun bulkToTopMap(eventSource: SourceView, count: Int, toTop: Boolean) = mapOf(
             source to eventSource.analyticsValue,
             this.count to count,
-            to_top to toTop
+            to_top to toTop,
         )
     }
 }

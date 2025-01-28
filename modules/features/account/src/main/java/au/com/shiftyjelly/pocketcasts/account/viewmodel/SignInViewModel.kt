@@ -1,19 +1,24 @@
 package au.com.shiftyjelly.pocketcasts.account.viewmodel
 
+import androidx.annotation.StringRes
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.viewModelScope
-import au.com.shiftyjelly.pocketcasts.account.AccountAuth
-import au.com.shiftyjelly.pocketcasts.account.SignInSource
+import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
 import au.com.shiftyjelly.pocketcasts.repositories.subscription.SubscriptionManager
+import au.com.shiftyjelly.pocketcasts.repositories.sync.LoginResult
+import au.com.shiftyjelly.pocketcasts.repositories.sync.SignInSource
+import au.com.shiftyjelly.pocketcasts.repositories.sync.SyncManager
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.launch
 import javax.inject.Inject
+import kotlinx.coroutines.launch
+import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @HiltViewModel
 class SignInViewModel
 @Inject constructor(
-    private val auth: AccountAuth,
-    private val subscriptionManager: SubscriptionManager
+    private val syncManager: SyncManager,
+    private val subscriptionManager: SubscriptionManager,
+    private val podcastManager: PodcastManager,
 ) : AccountViewModel() {
 
     val signInState = MutableLiveData<SignInState>().apply { value = SignInState.Empty }
@@ -66,12 +71,17 @@ class SignInViewModel
 
         subscriptionManager.clearCachedStatus()
         viewModelScope.launch {
-            val result = auth.signInWithEmailAndPassword(emailString, pwdString, SignInSource.SignInViewModel)
+            val result = syncManager.loginWithEmailAndPassword(
+                email = emailString,
+                password = pwdString,
+                signInSource = SignInSource.UserInitiated.SignInViewModel,
+            )
             when (result) {
-                is AccountAuth.AuthResult.Success -> {
+                is LoginResult.Success -> {
+                    podcastManager.refreshPodcastsAfterSignIn()
                     signInState.postValue(SignInState.Success)
                 }
-                is AccountAuth.AuthResult.Failed -> {
+                is LoginResult.Failed -> {
                     val message = result.message
                     val errors = mutableSetOf(SignInError.SERVER)
                     signInState.postValue(SignInState.Failure(errors, message))
@@ -81,10 +91,10 @@ class SignInViewModel
     }
 }
 
-enum class SignInError {
-    INVALID_EMAIL,
-    INVALID_PASSWORD,
-    SERVER
+enum class SignInError(@StringRes val message: Int) {
+    INVALID_EMAIL(LR.string.error_invalid_email_address),
+    INVALID_PASSWORD(LR.string.error_invalid_password_length),
+    SERVER(LR.string.error_server_failed),
 }
 
 sealed class SignInState {

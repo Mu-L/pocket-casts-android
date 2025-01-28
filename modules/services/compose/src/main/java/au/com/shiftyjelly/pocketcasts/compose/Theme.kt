@@ -1,5 +1,8 @@
 package au.com.shiftyjelly.pocketcasts.compose
 
+import android.annotation.SuppressLint
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
 import androidx.compose.material.Colors
 import androidx.compose.material.MaterialTheme
 import androidx.compose.material.Surface
@@ -7,10 +10,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.sp
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 
-private val LocalColors = staticCompositionLocalOf { PocketCastsTheme(colors = ThemeLightColors, isLight = true) }
+val LocalColors = staticCompositionLocalOf { PocketCastsTheme(type = Theme.ThemeType.LIGHT, colors = ThemeLightColors) }
 
 /**
  * This theme should be used to support light/dark colors if the composable root of the view tree
@@ -20,19 +25,42 @@ private val LocalColors = staticCompositionLocalOf { PocketCastsTheme(colors = T
 @Composable
 fun AppThemeWithBackground(
     themeType: Theme.ThemeType,
-    content: @Composable () -> Unit
+    backgroundColor: @Composable () -> Color = { Color.Unspecified },
+    content: @Composable () -> Unit,
 ) {
     AppTheme(themeType) {
-        SurfacedContent(content)
+        // Use surface so Material uses appropraite tinting for icons etc.
+        Surface(color = MaterialTheme.colors.background) {
+            // If we specify a custom color set is a background after Material
+            // sets colors through a surface
+            Box(
+                modifier = Modifier.background(backgroundColor()),
+            ) {
+                content()
+            }
+        }
     }
 }
 
 @Composable
 fun AppTheme(
     themeType: Theme.ThemeType,
-    content: @Composable () -> Unit
+    content: @Composable () -> Unit,
 ) {
-    val colors = when (themeType) {
+    val colors = themeTypeToColors(themeType)
+    val theme = PocketCastsTheme(type = themeType, colors = colors)
+
+    CompositionLocalProvider(LocalColors provides theme) {
+        MaterialTheme(
+            colors = buildMaterialColors(colors, theme.isLight),
+            content = content,
+        )
+    }
+}
+
+@Composable
+fun themeTypeToColors(themeType: Theme.ThemeType) =
+    when (themeType) {
         Theme.ThemeType.LIGHT -> ThemeLightColors
         Theme.ThemeType.DARK -> ThemeDarkColors
         Theme.ThemeType.EXTRA_DARK -> ThemeExtraDarkColors
@@ -45,29 +73,9 @@ fun AppTheme(
         Theme.ThemeType.DARK_CONTRAST -> ThemeDarkContrastColors
     }
 
-    val isLight = !themeType.darkTheme
-    val theme = PocketCastsTheme(colors = colors, isLight = isLight)
-
-    CompositionLocalProvider(LocalColors provides theme) {
-        MaterialTheme(
-            colors = buildMaterialColors(colors, isLight),
-            content = content
-        )
-    }
-}
-
-@Composable
-private fun SurfacedContent(
-    content: @Composable () -> Unit
-) {
-    Surface(color = MaterialTheme.colors.background) {
-        content()
-    }
-}
-
 @Composable
 fun AutomotiveTheme(content: @Composable () -> Unit) {
-    val theme = PocketCastsTheme(colors = ThemeDarkColors, isLight = false)
+    val theme = PocketCastsTheme(type = Theme.ThemeType.DARK, colors = ThemeDarkColors)
     val typography = MaterialTheme.typography
     // Increase the size of the fonts on Automotive to match the system
     CompositionLocalProvider(LocalColors provides theme) {
@@ -86,18 +94,21 @@ fun AutomotiveTheme(content: @Composable () -> Unit) {
                 subtitle2 = typography.subtitle2.copy(fontSize = 21.sp),
                 button = typography.button.copy(fontSize = 21.sp),
                 caption = typography.caption.copy(fontSize = 18.sp),
-                overline = typography.overline.copy(fontSize = 15.sp)
+                overline = typography.overline.copy(fontSize = 15.sp),
             ),
-            content = content
+            content = content,
         )
     }
 }
 
 data class PocketCastsTheme(
+    val type: Theme.ThemeType,
     val colors: ThemeColors,
-    val isLight: Boolean
-)
+) {
+    val isLight get() = !type.darkTheme
+}
 
+@SuppressLint("ConflictingOnColor")
 private fun buildMaterialColors(colors: ThemeColors, isLight: Boolean): Colors {
     return Colors(
         primary = colors.primaryInteractive01,
@@ -112,7 +123,7 @@ private fun buildMaterialColors(colors: ThemeColors, isLight: Boolean): Colors {
         onBackground = colors.secondaryIcon01,
         onSurface = colors.primaryInteractive01,
         onError = colors.secondaryIcon01,
-        isLight = isLight
+        isLight = isLight,
     )
 }
 

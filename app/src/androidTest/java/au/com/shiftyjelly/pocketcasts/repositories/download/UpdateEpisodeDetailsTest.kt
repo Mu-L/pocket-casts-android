@@ -8,9 +8,13 @@ import androidx.work.ListenableWorker
 import androidx.work.WorkerFactory
 import androidx.work.WorkerParameters
 import androidx.work.testing.TestListenableWorkerBuilder
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
+import java.util.Date
+import java.util.UUID
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.runBlocking
+import okhttp3.OkHttpClient
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.assertNull
@@ -22,9 +26,6 @@ import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
 import org.mockito.kotlin.times
 import org.mockito.kotlin.verify
-import java.util.Date
-import java.util.UUID
-import java.util.concurrent.TimeUnit
 
 @RunWith(AndroidJUnit4ClassRunner::class)
 class UpdateEpisodeDetailsTest {
@@ -54,8 +55,10 @@ class UpdateEpisodeDetailsTest {
         server.enqueue(redirectResponse)
         server.enqueue(finalResponse)
 
-        val episode = Episode(uuid = UUID.randomUUID().toString(), publishedDate = Date(), downloadUrl = firstUrl.toString())
-        val episodeManager = mock<EpisodeManager> { on { findByUuid(episode.uuid) }.doReturn(episode) }
+        val episode = PodcastEpisode(uuid = UUID.randomUUID().toString(), publishedDate = Date(), downloadUrl = firstUrl.toString())
+        val episodeManager = mock<EpisodeManager> {
+            onBlocking { findByUuid(episode.uuid) }.doReturn(episode)
+        }
 
         val episodeUuids = listOf(episode.uuid).toTypedArray()
         val data = Data.Builder().putStringArray(UpdateEpisodeDetailsTask.INPUT_EPISODE_UUIDS, episodeUuids).build()
@@ -77,13 +80,13 @@ class UpdateEpisodeDetailsTest {
             val thirdRequest = server.takeRequest(1, TimeUnit.MILLISECONDS)
             assertNull("There shouldn't be a third request", thirdRequest)
 
-            verify(episodeManager, times(1)).updateSizeInBytes(episode, testFileSize)
+            verify(episodeManager, times(1)).updateSizeInBytesBlocking(episode, testFileSize)
         }
     }
 
     class TestWorkerFactory(private val episodeManager: EpisodeManager) : WorkerFactory() {
         override fun createWorker(context: Context, workerClassName: String, workerParameters: WorkerParameters): ListenableWorker? {
-            return UpdateEpisodeDetailsTask(context, workerParameters, episodeManager)
+            return UpdateEpisodeDetailsTask(context, workerParameters, episodeManager, OkHttpClient())
         }
     }
 }

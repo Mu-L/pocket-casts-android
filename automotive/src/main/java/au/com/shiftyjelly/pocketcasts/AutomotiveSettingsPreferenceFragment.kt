@@ -1,14 +1,11 @@
 package au.com.shiftyjelly.pocketcasts
 
-import android.content.SharedPreferences
 import android.os.Bundle
-import android.view.View
-import androidx.lifecycle.LiveData
-import androidx.lifecycle.LiveDataReactiveStreams
-import androidx.lifecycle.Observer
+import androidx.lifecycle.lifecycleScope
 import androidx.preference.EditTextPreference
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
+import androidx.preference.SwitchPreference
 import au.com.shiftyjelly.pocketcasts.localization.BuildConfig
 import au.com.shiftyjelly.pocketcasts.localization.extensions.getStringPluralSeconds
 import au.com.shiftyjelly.pocketcasts.localization.extensions.getStringPluralSecondsMinutesHoursDaysOrYears
@@ -16,71 +13,141 @@ import au.com.shiftyjelly.pocketcasts.models.to.RefreshState
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
 import au.com.shiftyjelly.pocketcasts.ui.helper.FragmentHostListener
+import au.com.shiftyjelly.pocketcasts.views.extensions.setInputAsSeconds
 import dagger.hilt.android.AndroidEntryPoint
-import io.reactivex.BackpressureStrategy
-import io.reactivex.Flowable
 import java.util.Date
-import java.util.concurrent.TimeUnit
 import javax.inject.Inject
+import kotlin.time.Duration.Companion.milliseconds
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.launchIn
+import kotlinx.coroutines.flow.onEach
+import kotlinx.coroutines.rx2.asFlow
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @AndroidEntryPoint
-class AutomotiveSettingsPreferenceFragment : PreferenceFragmentCompat(), SharedPreferences.OnSharedPreferenceChangeListener, Observer<RefreshState> {
+class AutomotiveSettingsPreferenceFragment : PreferenceFragmentCompat() {
 
     @Inject lateinit var settings: Settings
+
     @Inject lateinit var podcastManager: PodcastManager
 
-    private var preferenceRefreshNow: Preference? = null
-    private var refreshObservable: LiveData<RefreshState>? = null
+    private lateinit var preferenceAutoPlay: SwitchPreference
+    private lateinit var preferenceAutoSubscribeToPlayed: SwitchPreference
+    private lateinit var preferenceAutoShowPlayed: SwitchPreference
+    private lateinit var preferenceSkipForward: EditTextPreference
+    private lateinit var preferenceSkipBackward: EditTextPreference
+    private lateinit var preferenceRefreshNow: Preference
+    private lateinit var about: Preference
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         addPreferencesFromResource(R.xml.preferences_auto)
 
-        changeSkipTitles()
+        preferenceAutoPlay = findPreference("autoUpNextEmpty")!!
+        preferenceAutoSubscribeToPlayed = findPreference("autoSubscribeToPlayed")!!
+        preferenceAutoShowPlayed = findPreference("autoShowPlayed")!!
+        preferenceRefreshNow = findPreference("refresh_now")!!
+        preferenceSkipForward = findPreference(Settings.PREFERENCE_SKIP_FORWARD)!!
+        preferenceSkipBackward = findPreference(Settings.PREFERENCE_SKIP_BACKWARD)!!
+        about = findPreference("about")!!
+
+        setupAutoPlay()
+        setupAutoSubscribeToPlayed()
+        setupAutoShowPlayed()
+        setupSkipForward()
+        setupSkipBackward()
         setupRefreshNow()
         setupAbout()
     }
 
-    private fun setupAbout() {
-        val preference = findPreference<Preference>("about") ?: return
-        preference.summary = getString(LR.string.settings_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE.toString())
-        preference.setOnPreferenceClickListener {
-            (activity as? FragmentHostListener)?.addFragment(AutomotiveAboutFragment())
+    private fun setupAutoPlay() {
+        preferenceAutoPlay.setOnPreferenceChangeListener { _, newValue ->
+            settings.autoPlayNextEpisodeOnEmpty.set(newValue as Boolean, updateModifiedAt = true)
             true
         }
+        settings.autoPlayNextEpisodeOnEmpty.flow
+            .onEach { preferenceAutoPlay.isChecked = it }
+            .launchIn(lifecycleScope)
     }
 
-    private fun setupRefreshNow() {
-        preferenceRefreshNow = findPreference<Preference>("refresh_now")?.apply {
-            setOnPreferenceClickListener {
-                podcastManager.refreshPodcasts(fromLog = "Automotive")
-                updateRefreshSummary(RefreshState.Refreshing)
+    private fun setupAutoSubscribeToPlayed() {
+        preferenceAutoSubscribeToPlayed.setOnPreferenceChangeListener { _, newValue ->
+            settings.autoSubscribeToPlayed.set(newValue as Boolean, updateModifiedAt = true)
+            true
+        }
+        settings.autoSubscribeToPlayed.flow
+            .onEach { preferenceAutoSubscribeToPlayed.isChecked = it }
+            .launchIn(lifecycleScope)
+    }
+
+    private fun setupAutoShowPlayed() {
+        preferenceAutoShowPlayed.setOnPreferenceChangeListener { _, newValue ->
+            settings.autoShowPlayed.set(newValue as Boolean, updateModifiedAt = true)
+            true
+        }
+        settings.autoShowPlayed.flow
+            .onEach { preferenceAutoShowPlayed.isChecked = it }
+            .launchIn(lifecycleScope)
+    }
+
+    private fun setupSkipForward() {
+        preferenceSkipForward.setInputAsSeconds()
+        preferenceSkipForward.setOnPreferenceChangeListener { _, newValue ->
+            val value = newValue.toString().toIntOrNull() ?: 0
+            if (value > 0) {
+                settings.skipForwardInSecs.set(value, updateModifiedAt = true)
                 true
+            } else {
+                false
             }
         }
+        settings.skipForwardInSecs.flow
+            .onEach {
+                preferenceSkipForward.text = it.toString()
+                preferenceSkipForward.summary = resources.getStringPluralSeconds(settings.skipForwardInSecs.value)
+            }
+            .launchIn(lifecycleScope)
     }
 
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
+    private fun setupSkipBackward() {
+        preferenceSkipBackward.setInputAsSeconds()
+        preferenceSkipBackward.setOnPreferenceChangeListener { _, newValue ->
+            val value = newValue.toString().toIntOrNull() ?: 0
+            if (value > 0) {
+                settings.skipBackInSecs.set(value, updateModifiedAt = true)
+                true
+            } else {
+                false
+            }
+        }
+        settings.skipBackInSecs.flow
+            .onEach {
+                preferenceSkipBackward.text = it.toString()
+                preferenceSkipBackward.summary = resources.getStringPluralSeconds(settings.skipBackInSecs.value)
+            }
+            .launchIn(lifecycleScope)
+    }
 
-        refreshObservable = LiveDataReactiveStreams.fromPublisher(
-            settings.refreshStateObservable
-                .toFlowable(BackpressureStrategy.LATEST)
-                .switchMap { state ->
-                    Flowable.interval(500, TimeUnit.MILLISECONDS).switchMap { Flowable.just(state) }
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private fun setupRefreshNow() {
+        preferenceRefreshNow.setOnPreferenceClickListener {
+            podcastManager.refreshPodcasts(fromLog = "Automotive")
+            updateRefreshSummary(RefreshState.Refreshing)
+            true
+        }
+        settings.refreshStateObservable.asFlow()
+            .flatMapLatest { state ->
+                flow {
+                    while (true) {
+                        emit(state)
+                        delay(500.milliseconds)
+                    }
                 }
-        )
-        refreshObservable?.observe(viewLifecycleOwner, this)
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-
-        refreshObservable?.removeObserver(this)
-    }
-
-    override fun onChanged(state: RefreshState) {
-        updateRefreshSummary(state)
+            }
+            .onEach { updateRefreshSummary(it) }
+            .launchIn(lifecycleScope)
     }
 
     private fun updateRefreshSummary(state: RefreshState) {
@@ -95,35 +162,14 @@ class AutomotiveSettingsPreferenceFragment : PreferenceFragmentCompat(), SharedP
             is RefreshState.Failed -> getString(LR.string.profile_refresh_failed)
             else -> getString(LR.string.profile_refresh_status_unknown)
         }
-        preferenceRefreshNow?.summary = status
+        preferenceRefreshNow.summary = status
     }
 
-    override fun onResume() {
-        super.onResume()
-        preferenceScreen.sharedPreferences?.registerOnSharedPreferenceChangeListener(this)
-    }
-
-    override fun onPause() {
-        super.onPause()
-        preferenceScreen.sharedPreferences?.unregisterOnSharedPreferenceChangeListener(this)
-    }
-
-    private fun changeSkipTitles() {
-        val skipForwardSummary = resources.getStringPluralSeconds(settings.getSkipForwardInSecs())
-        preferenceManager.findPreference<EditTextPreference>(Settings.PREFERENCE_SKIP_FORWARD)?.summary = skipForwardSummary
-        val skipBackwardSummary = resources.getStringPluralSeconds(settings.getSkipBackwardInSecs())
-        preferenceManager.findPreference<EditTextPreference>(Settings.PREFERENCE_SKIP_BACKWARD)?.summary = skipBackwardSummary
-    }
-
-    override fun onSharedPreferenceChanged(sharedPreferences: SharedPreferences, key: String) {
-        if (Settings.PREFERENCE_SKIP_FORWARD == key || Settings.PREFERENCE_SKIP_BACKWARD == key) {
-            changeSkipTitles()
-            settings.updateSkipValues()
-
-            when (key) {
-                Settings.PREFERENCE_SKIP_FORWARD -> settings.setSkipForwardNeedsSync(true)
-                Settings.PREFERENCE_SKIP_BACKWARD -> settings.setSkipBackNeedsSync(true)
-            }
+    private fun setupAbout() {
+        about.summary = getString(LR.string.settings_version, BuildConfig.VERSION_NAME, BuildConfig.VERSION_CODE.toString())
+        about.setOnPreferenceClickListener {
+            (activity as? FragmentHostListener)?.addFragment(AutomotiveAboutFragment())
+            true
         }
     }
 }

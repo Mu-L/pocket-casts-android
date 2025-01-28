@@ -1,52 +1,77 @@
 package au.com.shiftyjelly.pocketcasts.repositories.playback
 
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
+import au.com.shiftyjelly.pocketcasts.preferences.model.AutoPlaySource
 import au.com.shiftyjelly.pocketcasts.repositories.download.DownloadManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
-import io.reactivex.Completable
 import io.reactivex.Observable
 import io.reactivex.rxkotlin.combineLatest
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.FlowPreview
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.catch
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.rx2.asFlow
 
 interface UpNextQueue {
     val isEmpty: Boolean
     val changesObservable: Observable<State>
-    val currentEpisode: Playable?
-    val queueEpisodes: List<Playable>
+    val currentEpisode: BaseEpisode?
+    val queueEpisodes: List<BaseEpisode>
     val size: Int
         get() = queueEpisodes.size
 
-    val allEpisodes get(): List<Playable> = currentEpisode?.let { listOf(it) + queueEpisodes } ?: queueEpisodes
-    fun isCurrentEpisode(episode: Playable): Boolean
-    suspend fun playNow(episode: Playable, onAdd: (() -> Unit)?)
-    suspend fun playNext(episode: Playable, downloadManager: DownloadManager, onAdd: (() -> Unit)?)
-    suspend fun playLast(episode: Playable, downloadManager: DownloadManager, onAdd: (() -> Unit)?)
-    suspend fun playAllNext(episodes: List<Playable>, downloadManager: DownloadManager)
-    suspend fun playAllLast(episodes: List<Playable>, downloadManager: DownloadManager)
-    suspend fun removeEpisode(episode: Playable)
-    suspend fun clearAndPlayAll(episodes: List<Playable>, downloadManager: DownloadManager)
+    val allEpisodes get(): List<BaseEpisode> = currentEpisode?.let { listOf(it) + queueEpisodes } ?: queueEpisodes
+    fun isCurrentEpisode(episode: BaseEpisode): Boolean
+    suspend fun playNow(episode: BaseEpisode, automaticUpNextSource: AutoPlaySource?, onAdd: (() -> Unit)?)
+    suspend fun playNextBlocking(episode: BaseEpisode, downloadManager: DownloadManager, onAdd: (() -> Unit)?)
+    suspend fun playLastBlocking(episode: BaseEpisode, downloadManager: DownloadManager, onAdd: (() -> Unit)?)
+    suspend fun playAllNext(episodes: List<BaseEpisode>, downloadManager: DownloadManager)
+    suspend fun playAllLast(episodes: List<BaseEpisode>, downloadManager: DownloadManager)
+    suspend fun removeEpisode(episode: BaseEpisode, shouldShuffleUpNext: Boolean = false)
+    suspend fun clearAndPlayAllBlocking(episodes: List<BaseEpisode>, downloadManager: DownloadManager)
     fun moveEpisode(from: Int, to: Int)
-    fun changeList(episodes: List<Playable>)
+    fun changeList(episodes: List<BaseEpisode>)
     fun clearUpNext()
     fun removeAll()
-    suspend fun removeAllEpisodes(episodes: List<Playable>)
-    fun importServerChanges(episodes: List<Playable>, playbackManager: PlaybackManager, downloadManager: DownloadManager): Completable
+    suspend fun removeAllIncludingChanges()
+    suspend fun importServerChangesBlocking(episodes: List<BaseEpisode>, playbackManager: PlaybackManager, downloadManager: DownloadManager)
     fun contains(uuid: String): Boolean
+    fun updateCurrentEpisodeState(state: State)
 
     sealed class State {
         object Empty : State()
 
         // Loaded state includes the current episode as episode and the episodes in up next in queue. Queue does not include the currently playing episode
-        data class Loaded(val episode: Playable, val podcast: Podcast?, val queue: List<Playable>) : State()
+        data class Loaded(val episode: BaseEpisode, val podcast: Podcast?, val queue: List<BaseEpisode>) : State()
 
         fun queueSize(): Int {
             return if (this is Loaded) queue.size else 0
         }
+
+        companion object {
+            fun isEqualWithEpisodeCompare(stateOne: State, stateTwo: State, isPlayingEpisodeEqual: (BaseEpisode, BaseEpisode) -> Boolean): Boolean {
+                return when {
+                    stateOne is Empty && stateTwo is Empty -> true
+                    stateOne is Loaded && stateTwo is Loaded -> {
+                        stateOne.queue.map { it.uuid } == stateTwo.queue.map { it.uuid } &&
+                            isPlayingEpisodeEqual(stateOne.episode, stateTwo.episode)
+                    }
+                    else -> false
+                }
+            }
+        }
     }
 
-    fun setup()
+    fun setupBlocking()
 
     /**
      * getChangesObservableWithLiveCurrentEpisode(episodeManager: EpisodeManager)
@@ -55,21 +80,65 @@ interface UpNextQueue {
      * when certain metadata changes
      */
     fun getChangesObservableWithLiveCurrentEpisode(episodeManager: EpisodeManager, podcastManager: PodcastManager): Observable<State> {
+        // the debounce prevents too many events being generated and just returns the latest
         return changesObservable.debounce(100, TimeUnit.MILLISECONDS).switchMap { state ->
             if (state is State.Loaded) {
                 if (state.podcast != null) {
                     // If we have a podcast we need to observe its effects state as well to ensure it updates when the global override changes
-                    episodeManager.observePlayableByUuid(state.episode.uuid)
-                        .combineLatest(podcastManager.observePodcastByUuid(state.podcast.uuid).distinctUntilChanged { t1, t2 -> t1.isUsingEffects == t2.isUsingEffects })
-                        .map { State.Loaded(it.first, it.second, state.queue) }
+                    episodeManager.findEpisodeByUuidRxFlowable(state.episode.uuid)
+                        .combineLatest(podcastManager.podcastByUuidRxFlowable(state.podcast.uuid).distinctUntilChanged { t1, t2 -> t1.isUsingEffects == t2.isUsingEffects })
+                        .map<State> { State.Loaded(it.first, it.second, state.queue) }
+                        .onErrorReturn { State.Empty }
                         .toObservable()
                 } else {
-                    episodeManager.observePlayableByUuid(state.episode.uuid)
-                        .map { State.Loaded(it, state.podcast, state.queue) }
+                    episodeManager.findEpisodeByUuidRxFlowable(state.episode.uuid)
+                        .map<State> { State.Loaded(it, state.podcast, state.queue) }
+                        .onErrorReturn { State.Empty }
                         .toObservable()
                 }
             } else {
                 Observable.just(state)
+            }
+        }
+    }
+
+    @OptIn(FlowPreview::class, ExperimentalCoroutinesApi::class)
+    fun getChangesFlowWithLiveCurrentEpisode(episodeManager: EpisodeManager, podcastManager: PodcastManager): Flow<State> {
+        return changesObservable.asFlow().debounce(100).flatMapLatest { state ->
+            if (state is State.Loaded) {
+                if (state.podcast != null) {
+                    episodeManager.findEpisodeByUuidFlow(state.episode.uuid)
+                        .combine<BaseEpisode, Podcast, State>(
+                            podcastManager
+                                .podcastByUuidFlow(state.podcast.uuid)
+                                .distinctUntilChanged { t1, t2 -> t1.isUsingEffects == t2.isUsingEffects },
+                        ) { episode, podcast ->
+                            val loadedState = State.Loaded(episode, podcast, state.queue)
+                            updateCurrentEpisodeStateIfNeeded(episode, loadedState)
+                            loadedState
+                        }
+                        .catch { emit(State.Empty) }
+                } else {
+                    episodeManager.findEpisodeByUuidFlow(state.episode.uuid)
+                        .map<BaseEpisode, State> {
+                            val loadedState = State.Loaded(it, state.podcast, state.queue)
+                            updateCurrentEpisodeStateIfNeeded(it, loadedState)
+                            loadedState
+                        }
+                        .catch { emit(State.Empty) }
+                }
+            } else {
+                flowOf(state)
+            }
+        }
+    }
+
+    fun updateCurrentEpisodeStateIfNeeded(episodeFromDb: BaseEpisode, state: State) {
+        currentEpisode?.let { currentEpisode ->
+            if (episodeFromDb.uuid == currentEpisode.uuid &&
+                episodeFromDb.deselectedChapters.sorted() != currentEpisode.deselectedChapters.sorted()
+            ) {
+                updateCurrentEpisodeState(state)
             }
         }
     }
@@ -80,7 +149,9 @@ enum class UpNextSource(val analyticsValue: String) {
     PLAYER("player"),
     NOW_PLAYING("now_playing"),
     UP_NEXT_SHORTCUT("up_next_shortcut"),
-    UNKNOWN("unknown");
+    UP_NEXT_TAB("up_next_tab"),
+    UNKNOWN("unknown"),
+    ;
 
     companion object {
         fun fromString(string: String) = UpNextSource.values().find { it.analyticsValue == string } ?: UNKNOWN

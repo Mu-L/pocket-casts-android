@@ -1,7 +1,7 @@
 package au.com.shiftyjelly.pocketcasts.repositories.playback
 
 import android.os.SystemClock
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
 import au.com.shiftyjelly.pocketcasts.models.to.PlaybackEffects
 import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
 import kotlinx.coroutines.Dispatchers
@@ -14,7 +14,8 @@ abstract class LocalPlayer(override val onPlayerEvent: (Player, PlayerEvent) -> 
 
     companion object {
         // The volume we set the media player to seekToTimeMswhen we lose audio focus, but are allowed to reduce the volume instead of stopping playback.
-        const val VOLUME_DUCK = 1.0f // We don't actually duck the volume
+        const val VOLUME_DUCK = 0.5f
+
         // The volume we set the media player when we have audio focus.
         const val VOLUME_NORMAL = 1.0f
     }
@@ -25,16 +26,19 @@ abstract class LocalPlayer(override val onPlayerEvent: (Player, PlayerEvent) -> 
     private var seekingToPositionMs: Int = 0
     private var seekRetryAllowed: Boolean = false
 
-    protected var isHLS: Boolean = false
+    protected var episodeLocation: EpisodeLocation? = null
 
-    override var episodeUuid: String? = null
+    private val episode get() = episodeLocation?.episode
 
-    override var episodeLocation: EpisodeLocation? = null
+    override val episodeUuid: String? get() = episode?.uuid
+
+    override val isDownloading: Boolean get() = episode?.isDownloaded == true
+
     override val url: String?
         get() = (episodeLocation as? EpisodeLocation.Stream)?.uri
 
     override val filePath: String?
-        get() = (episodeLocation as? EpisodeLocation.Downloaded)?.filePath
+        get() = (episodeLocation as? EpisodeLocation.Downloaded)?.uri
 
     override val isRemote: Boolean
         get() = false
@@ -161,6 +165,10 @@ abstract class LocalPlayer(override val onPlayerEvent: (Player, PlayerEvent) -> 
         onPlayerEvent(this, PlayerEvent.MetadataAvailable(episodeMetadata))
     }
 
+    protected fun onEpisodeChanged(episodeUuid: String) {
+        onPlayerEvent(this, PlayerEvent.EpisodeChanged(episodeUuid))
+    }
+
     override suspend fun seekToTimeMs(positionMs: Int) {
         withContext(Dispatchers.Main) {
             if (positionMs < 0) {
@@ -177,14 +185,8 @@ abstract class LocalPlayer(override val onPlayerEvent: (Player, PlayerEvent) -> 
         }
     }
 
-    override fun setEpisode(episode: Playable) {
-        this.episodeUuid = episode.uuid
-        this.isHLS = episode.isHLS
-        episodeLocation = if (episode.isDownloaded) {
-            EpisodeLocation.Downloaded(episode.downloadedFilePath)
-        } else {
-            EpisodeLocation.Stream(episode.downloadUrl)
-        }
+    override fun setEpisode(episode: BaseEpisode) {
+        episodeLocation = EpisodeLocation.create(episode)
     }
 
     override suspend fun setPlaybackEffects(playbackEffects: PlaybackEffects) {}

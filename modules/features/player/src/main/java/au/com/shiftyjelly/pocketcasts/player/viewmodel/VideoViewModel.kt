@@ -2,10 +2,10 @@ package au.com.shiftyjelly.pocketcasts.player.viewmodel
 
 import android.os.Build
 import androidx.lifecycle.LiveData
-import androidx.lifecycle.LiveDataReactiveStreams
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
+import androidx.lifecycle.toLiveData
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackState
 import dagger.hilt.android.lifecycle.HiltViewModel
@@ -18,34 +18,36 @@ import javax.inject.Inject
 
 @HiltViewModel
 class VideoViewModel @Inject constructor(
-    private val playbackManager: PlaybackManager
+    private val playbackManager: PlaybackManager,
 ) : ViewModel() {
 
-    val playbackState: LiveData<PlaybackState> = LiveDataReactiveStreams.fromPublisher(playbackManager.playbackStateRelay.toFlowable(BackpressureStrategy.LATEST))
+    val playbackState: LiveData<PlaybackState> = playbackManager.playbackStateRelay
+        .toFlowable(BackpressureStrategy.LATEST)
+        .toLiveData()
 
     private var hideControlsTimer: Disposable? = null
     private var lastTimeHidingControls = 0L
 
     private var controlsVisibleMutable = MutableLiveData(true)
-    private val playbackSource = AnalyticsSource.FULL_SCREEN_VIDEO
+    private val sourceView = SourceView.FULL_SCREEN_VIDEO
     val controlsVisible: LiveData<Boolean> get() = controlsVisibleMutable
 
     fun play() {
-        playbackManager.playQueue(playbackSource = playbackSource)
+        playbackManager.playQueue(sourceView = sourceView)
         startHideControlsTimer()
     }
 
     fun pause() {
-        playbackManager.pause(playbackSource = playbackSource)
+        playbackManager.pause(sourceView = sourceView)
     }
 
     fun skipBackward() {
-        playbackManager.skipBackward(playbackSource = playbackSource)
+        playbackManager.skipBackward(sourceView = sourceView)
         startHideControlsTimer()
     }
 
     fun skipForward() {
-        playbackManager.skipForward(playbackSource = playbackSource)
+        playbackManager.skipForward(sourceView = sourceView)
         startHideControlsTimer()
     }
 

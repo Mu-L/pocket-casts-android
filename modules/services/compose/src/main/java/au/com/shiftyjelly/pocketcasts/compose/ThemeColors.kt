@@ -110,7 +110,7 @@ data class ThemeColors(
     val category16: Color,
     val category17: Color,
     val category18: Color,
-    val category19: Color
+    val category19: Color,
 ) {
 
     val folderColors = listOf(
@@ -125,10 +125,19 @@ data class ThemeColors(
         FolderColor(id = 10, color = filter11),
         FolderColor(id = 8, color = filter09),
         FolderColor(id = 5, color = filter06),
-        FolderColor(id = 11, color = filter12)
+        FolderColor(id = 11, color = filter12),
+    )
+
+    private val filterColors = listOf(
+        filter01,
+        filter05,
+        filter04,
+        filter06,
+        filter03,
     )
 
     private val folderIdToColor = folderColors.associateBy({ it.id }, { it.color })
 
     fun getFolderColor(id: Int): Color = folderIdToColor[id] ?: folderColors.first().color
+    fun getFilterColor(colorIndex: Int): Color = filterColors.getOrElse(colorIndex) { filterColors.first() }
 }

@@ -1,18 +1,23 @@
 package au.com.shiftyjelly.pocketcasts.discover.view
 
-import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
+import androidx.core.os.BundleCompat
 import androidx.core.view.isVisible
+import androidx.core.view.updatePadding
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.discover.databinding.FragmentRegionSelectBinding
 import au.com.shiftyjelly.pocketcasts.discover.databinding.RowRegionBinding
 import au.com.shiftyjelly.pocketcasts.localization.helper.tryToLocalise
+import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.servers.model.DiscoverRegion
 import au.com.shiftyjelly.pocketcasts.views.extensions.setup
 import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragment
@@ -20,6 +25,7 @@ import au.com.shiftyjelly.pocketcasts.views.helper.NavigationIcon.BackArrow
 import coil.load
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.launch
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 private const val ARG_REGION_LIST = "regionlist"
@@ -49,17 +55,15 @@ class RegionSelectFragment : BaseFragment() {
     }
 
     val regionList: ArrayList<DiscoverRegion>
-        get() = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            arguments?.getParcelableArrayList(ARG_REGION_LIST, DiscoverRegion::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            arguments?.getParcelableArrayList(ARG_REGION_LIST)
-        } ?: ArrayList()
+        get() = arguments?.let { BundleCompat.getParcelableArrayList(it, ARG_REGION_LIST, DiscoverRegion::class.java) } ?: ArrayList()
 
     var listener: Listener? = null
 
     private var binding: FragmentRegionSelectBinding? = null
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
+
+    @Inject lateinit var analyticsTracker: AnalyticsTracker
+
+    @Inject lateinit var settings: Settings
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         binding = FragmentRegionSelectBinding.inflate(inflater, container, false)
@@ -86,6 +90,14 @@ class RegionSelectFragment : BaseFragment() {
         adapter.selectedRegionCode = arguments?.getString(ARG_SELECTED_REGION)
 
         binding.recyclerView.adapter = adapter
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                settings.bottomInset.collect {
+                    binding.recyclerView.updatePadding(bottom = it)
+                }
+            }
+        }
     }
 }
 

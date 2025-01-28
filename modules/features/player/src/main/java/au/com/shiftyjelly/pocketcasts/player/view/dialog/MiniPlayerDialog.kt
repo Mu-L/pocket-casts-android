@@ -3,9 +3,10 @@ package au.com.shiftyjelly.pocketcasts.player.view.dialog
 import android.content.Context
 import androidx.fragment.app.FragmentManager
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.analytics.EpisodeAnalytics
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
+import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.playback.UpNextSource
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
@@ -24,8 +25,9 @@ class MiniPlayerDialog(
     private val podcastManager: PodcastManager,
     private val episodeManager: EpisodeManager,
     private val fragmentManager: FragmentManager,
-    private val analyticsTracker: AnalyticsTrackerWrapper,
+    private val analyticsTracker: AnalyticsTracker,
     private val episodeAnalytics: EpisodeAnalytics,
+    private val settings: Settings,
 ) {
     private var isOptionClicked = false
     fun show(context: Context) {
@@ -39,7 +41,7 @@ class MiniPlayerDialog(
                     isOptionClicked = true
                     analyticsTracker.track(AnalyticsEvent.MINI_PLAYER_LONG_PRESS_MENU_OPTION_TAPPED, mapOf(OPTION_KEY to MARK_PLAYED))
                     markAsPlayed()
-                }
+                },
             )
             .addTextOption(
                 titleId = LR.string.player_end_playback_clear_up_next,
@@ -50,7 +52,7 @@ class MiniPlayerDialog(
                     isOptionClicked = true
                     analyticsTracker.track(AnalyticsEvent.MINI_PLAYER_LONG_PRESS_MENU_OPTION_TAPPED, mapOf(OPTION_KEY to CLOSE_AND_CLEAR_UP_NEXT))
                     endPlaybackAndClearUpNext(context)
-                }
+                },
             )
             .setOnDismiss {
                 if (!isOptionClicked) {
@@ -66,15 +68,15 @@ class MiniPlayerDialog(
             removeNowPlaying = true,
             playbackManager = playbackManager,
             analyticsTracker = analyticsTracker,
-            context = context
+            context = context,
         )
-        dialog.showOrClear(fragmentManager)
+        dialog.showOrClear(fragmentManager, tag = "mini_player_clear_dialog")
     }
 
     private fun markAsPlayed() {
         val episode = playbackManager.upNextQueue.currentEpisode ?: return
-        episodeManager.markAsPlayedAsync(episode, playbackManager, podcastManager)
-        episodeAnalytics.trackEvent(AnalyticsEvent.EPISODE_MARKED_AS_PLAYED, AnalyticsSource.MINIPLAYER, episode.uuid)
+        episodeManager.markAsPlayedAsync(episode, playbackManager, podcastManager, settings.upNextShuffle.value)
+        episodeAnalytics.trackEvent(AnalyticsEvent.EPISODE_MARKED_AS_PLAYED, SourceView.MINIPLAYER, episode.uuid)
     }
 
     companion object {

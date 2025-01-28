@@ -1,41 +1,38 @@
 package au.com.shiftyjelly.pocketcasts.repositories.podcast
 
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.to.HistorySyncResponse
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
 import io.reactivex.Observable
 import io.reactivex.schedulers.Schedulers
-import kotlinx.coroutines.CoroutineScope
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.rx2.await
 import kotlinx.coroutines.withContext
 import timber.log.Timber
-import javax.inject.Inject
-import kotlin.coroutines.CoroutineContext
 
 class HistoryManager @Inject constructor(
     private val podcastManager: PodcastManager,
     private val episodeManager: EpisodeManager,
     private val settings: Settings,
-) : CoroutineScope {
-
+) {
     companion object {
         const val ACTION_ADD = 1
         const val ACTION_DELETE = 2
         const val ADD_PODCAST_CONCURRENCY = 5
     }
 
-    override val coroutineContext: CoroutineContext
-        get() = Dispatchers.Default
-
     /**
      * Read the server listening history response.
      * @param response The server response.
      * @param updateServerModified Set to true when this is latest listening history, rather than part of the user's history.
      */
-    suspend fun processServerResponse(response: HistorySyncResponse, updateServerModified: Boolean, onProgressChanged: ((Float) -> Unit)? = null) = withContext(Dispatchers.IO) {
+    suspend fun processServerResponse(
+        response: HistorySyncResponse,
+        updateServerModified: Boolean,
+    ) = withContext(Dispatchers.IO) {
         if (!response.hasChanged(0) || response.changes.isNullOrEmpty()) {
             return@withContext
         }
@@ -50,28 +47,23 @@ class HistoryManager @Inject constructor(
         // add the missing podcasts or update the podcast it already unsubscribed in the database
         val missingPodcastUuids = podcastUuids.minus(databaseSubscribedPodcastUuids)
 
-        val total = missingPodcastUuids.size.toFloat()
-        var progress = 0
-
         // add the podcasts five at a time
         Observable.fromIterable(missingPodcastUuids)
             .observeOn(Schedulers.io())
             .flatMap(
                 { podcastUuid ->
-                    podcastManager.addPodcast(podcastUuid = podcastUuid, sync = false, subscribed = false)
+                    podcastManager.addPodcastRxSingle(podcastUuid = podcastUuid, sync = false, subscribed = false, shouldAutoDownload = false)
                         .doOnError { throwable -> LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, throwable, "History manager could not add podcast") }
                         .onErrorReturn { Podcast(uuid = podcastUuid) }
                         .toObservable()
-                }, true, ADD_PODCAST_CONCURRENCY
+                },
+                true,
+                ADD_PODCAST_CONCURRENCY,
             )
-            .doOnNext {
-                progress += 1
-                onProgressChanged?.invoke(progress / total)
-            }
             .toList()
             .await()
 
-        val skeletonEpisodes = mutableListOf<Episode>()
+        val skeletonEpisodes = mutableListOf<PodcastEpisode>()
 
         for (change in changes) {
             val interactionDate = change.modifiedAt.toLong()
@@ -83,8 +75,8 @@ class HistoryManager @Inject constructor(
                 if (episode != null) {
                     if ((episode.lastPlaybackInteraction ?: 0) < interactionDate) {
                         episode.lastPlaybackInteraction = interactionDate
-                        episode.lastPlaybackInteractionSyncStatus = Episode.LAST_PLAYBACK_INTERACTION_SYNCED
-                        episodeManager.update(episode)
+                        episode.lastPlaybackInteractionSyncStatus = PodcastEpisode.LAST_PLAYBACK_INTERACTION_SYNCED
+                        episodeManager.updateBlocking(episode)
                     }
                 } else if (podcastUuid != null) {
                     Timber.i("Listening history episode no longer exists. Episode: $episodeUuid podcast: $podcastUuid")
@@ -93,12 +85,12 @@ class HistoryManager @Inject constructor(
                 if (episode != null) {
                     episode.lastPlaybackInteraction = 0
                     episode.lastPlaybackInteractionSyncStatus = 1
-                    episodeManager.update(episode)
+                    episodeManager.updateBlocking(episode)
                 }
             }
         }
 
-        episodeManager.insert(skeletonEpisodes)
+        episodeManager.insertBlocking(skeletonEpisodes)
 
         if (updateServerModified) {
             settings.setHistoryServerModified(response.serverModified)

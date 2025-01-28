@@ -18,7 +18,7 @@ import au.com.shiftyjelly.pocketcasts.localization.R as LR
 fun PodcastSelectedText(
     count: Int,
     modifier: Modifier = Modifier,
-    color: Color = MaterialTheme.theme.colors.primaryText01
+    color: Color = MaterialTheme.theme.colors.primaryText01,
 ) {
     val selectedString = when (count) {
         0 -> stringResource(LR.string.settings_choose_podcasts)
@@ -28,13 +28,13 @@ fun PodcastSelectedText(
     TextP40(
         text = selectedString,
         color = color,
-        modifier = modifier
+        modifier = modifier,
     )
 }
 
 @Preview(name = "PodcastSelectText in English", showBackground = true)
 @Composable
-fun PodcastSelectedTextEnglishPreview() {
+private fun PodcastSelectedTextEnglishPreview() {
     AppTheme(Theme.ThemeType.LIGHT) {
         Column(modifier = Modifier.padding(8.dp)) {
             PodcastSelectedText(count = 0, modifier = Modifier.padding(bottom = 8.dp))
@@ -46,7 +46,7 @@ fun PodcastSelectedTextEnglishPreview() {
 
 @Preview(name = "PodcastSelectText in French", showBackground = true, locale = "fr")
 @Composable
-fun PodcastSelectedTextFrenchPreview() {
+private fun PodcastSelectedTextFrenchPreview() {
     AppTheme(Theme.ThemeType.LIGHT) {
         Column(modifier = Modifier.padding(8.dp)) {
             PodcastSelectedText(count = 0, modifier = Modifier.padding(bottom = 8.dp))

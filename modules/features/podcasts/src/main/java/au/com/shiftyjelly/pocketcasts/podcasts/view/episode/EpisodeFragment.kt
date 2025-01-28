@@ -1,13 +1,11 @@
 package au.com.shiftyjelly.pocketcasts.podcasts.view.episode
 
 import android.app.AlertDialog
-import android.app.Dialog
 import android.content.Context
 import android.content.res.ColorStateList
-import android.content.res.Resources
 import android.graphics.Color
-import android.os.Build
 import android.os.Bundle
+import android.os.Parcelable
 import android.view.ContextThemeWrapper
 import android.view.LayoutInflater
 import android.view.View
@@ -19,85 +17,68 @@ import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.core.graphics.BlendModeColorFilterCompat
 import androidx.core.graphics.BlendModeCompat
-import androidx.core.os.bundleOf
+import androidx.core.os.BundleCompat
 import androidx.core.view.isInvisible
 import androidx.core.view.isVisible
-import androidx.core.view.updateLayoutParams
+import androidx.core.widget.TextViewCompat
 import androidx.fragment.app.viewModels
 import androidx.lifecycle.Observer
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import au.com.shiftyjelly.pocketcasts.analytics.FirebaseAnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.localization.helper.TimeHelper
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodePlayingStatus
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeStatusEnum
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeViewSource
 import au.com.shiftyjelly.pocketcasts.podcasts.databinding.FragmentEpisodeBinding
+import au.com.shiftyjelly.pocketcasts.podcasts.viewmodel.PodcastAndEpisodeDetailsCoordinator
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
-import au.com.shiftyjelly.pocketcasts.repositories.images.PodcastImageLoader
-import au.com.shiftyjelly.pocketcasts.repositories.images.into
-import au.com.shiftyjelly.pocketcasts.servers.ServerManager
+import au.com.shiftyjelly.pocketcasts.reimagine.ShareDialogFragment
+import au.com.shiftyjelly.pocketcasts.repositories.images.PocketCastsImageRequestFactory
+import au.com.shiftyjelly.pocketcasts.repositories.images.loadInto
+import au.com.shiftyjelly.pocketcasts.servers.shownotes.ShowNotesState
+import au.com.shiftyjelly.pocketcasts.ui.R
 import au.com.shiftyjelly.pocketcasts.ui.extensions.getThemeColor
+import au.com.shiftyjelly.pocketcasts.ui.extensions.themed
 import au.com.shiftyjelly.pocketcasts.ui.helper.FragmentHostListener
-import au.com.shiftyjelly.pocketcasts.ui.helper.StatusBarColor
-import au.com.shiftyjelly.pocketcasts.ui.images.PodcastImageLoaderThemed
+import au.com.shiftyjelly.pocketcasts.ui.helper.StatusBarIconColor
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 import au.com.shiftyjelly.pocketcasts.ui.theme.ThemeColor
 import au.com.shiftyjelly.pocketcasts.utils.Network
 import au.com.shiftyjelly.pocketcasts.utils.Util
 import au.com.shiftyjelly.pocketcasts.utils.extensions.toSecondsFromColonFormattedString
 import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
+import au.com.shiftyjelly.pocketcasts.utils.parceler.DurationParceler
 import au.com.shiftyjelly.pocketcasts.views.dialog.OptionsDialog
-import au.com.shiftyjelly.pocketcasts.views.dialog.ShareDialog
 import au.com.shiftyjelly.pocketcasts.views.extensions.cleanup
 import au.com.shiftyjelly.pocketcasts.views.extensions.hide
 import au.com.shiftyjelly.pocketcasts.views.extensions.show
 import au.com.shiftyjelly.pocketcasts.views.fragments.BaseDialogFragment
+import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragment
 import au.com.shiftyjelly.pocketcasts.views.helper.IntentUtil
 import au.com.shiftyjelly.pocketcasts.views.helper.ShowNotesFormatter
 import au.com.shiftyjelly.pocketcasts.views.helper.WarningsHelper
-import com.google.android.material.bottomsheet.BottomSheetBehavior
-import com.google.android.material.bottomsheet.BottomSheetDialog
+import au.com.shiftyjelly.pocketcasts.views.helper.setLongStyleDate
 import dagger.hilt.android.AndroidEntryPoint
-import timber.log.Timber
 import javax.inject.Inject
+import kotlin.time.Duration
+import kotlinx.parcelize.Parcelize
+import kotlinx.parcelize.TypeParceler
+import timber.log.Timber
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 import au.com.shiftyjelly.pocketcasts.ui.R as UR
 
-private const val ARG_EPISODE_UUID = "episodeUUID"
-private const val ARG_EPISODE_VIEW_SOURCE = "episode_view_source"
-private const val ARG_OVERRIDE_PODCAST_LINK = "override_podcast_link"
-private const val ARG_PODCAST_UUID = "podcastUUID"
-private const val ARG_FROMLIST_UUID = "fromListUUID"
-private const val ARG_FORCE_DARK = "forceDark"
-
 @AndroidEntryPoint
-class EpisodeFragment : BaseDialogFragment() {
+class EpisodeFragment : BaseFragment() {
     companion object {
-
+        private const val NEW_INSTANCE_ARG = "EpisodeFragmentArg"
         private object AnalyticsProp {
             object Key {
                 const val SOURCE = "source"
                 const val EPISODE_UUID = "episode_uuid"
             }
-        }
-        fun newInstance(
-            episode: Episode,
-            source: EpisodeViewSource,
-            overridePodcastLink: Boolean = false,
-            fromListUuid: String? = null,
-            forceDark: Boolean = false
-        ): EpisodeFragment {
-            return newInstance(
-                episodeUuid = episode.uuid,
-                source = source,
-                overridePodcastLink = overridePodcastLink,
-                podcastUuid = episode.podcastUuid,
-                fromListUuid = fromListUuid,
-                forceDark = forceDark
-            )
         }
 
         fun newInstance(
@@ -106,77 +87,102 @@ class EpisodeFragment : BaseDialogFragment() {
             overridePodcastLink: Boolean = false,
             podcastUuid: String? = null,
             fromListUuid: String? = null,
-            forceDark: Boolean = false
+            forceDark: Boolean = false,
+            timestamp: Duration? = null,
+            autoPlay: Boolean = false,
         ): EpisodeFragment {
             return EpisodeFragment().apply {
-                arguments = bundleOf(
-                    ARG_EPISODE_UUID to episodeUuid,
-                    ARG_EPISODE_VIEW_SOURCE to source.value,
-                    ARG_OVERRIDE_PODCAST_LINK to overridePodcastLink,
-                    ARG_PODCAST_UUID to podcastUuid,
-                    ARG_FROMLIST_UUID to fromListUuid,
-                    ARG_FORCE_DARK to forceDark
-                )
+                arguments = Bundle().apply {
+                    putParcelable(
+                        NEW_INSTANCE_ARG,
+                        EpisodeFragmentArgs(
+                            episodeUuid = episodeUuid,
+                            source = source,
+                            overridePodcastLink = overridePodcastLink,
+                            podcastUuid = podcastUuid,
+                            fromListUuid = fromListUuid,
+                            forceDark = forceDark,
+                            timestamp = timestamp,
+                            autoPlay = autoPlay,
+                        ),
+                    )
+                }
             }
         }
+
+        private fun extractArgs(bundle: Bundle?): EpisodeFragmentArgs? =
+            bundle?.let { BundleCompat.getParcelable(it, NEW_INSTANCE_ARG, EpisodeFragmentArgs::class.java) }
     }
 
-    override val statusBarColor: StatusBarColor
-        get() = StatusBarColor.Custom(
-            context?.getThemeColor(UR.attr.primary_ui_01)
-                ?: Color.WHITE,
-            theme.isDarkTheme
-        )
+    override lateinit var statusBarIconColor: StatusBarIconColor
 
-    @Inject lateinit var serverManager: ServerManager
     @Inject lateinit var settings: Settings
+
     @Inject lateinit var warningsHelper: WarningsHelper
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
+
+    @Inject lateinit var analyticsTracker: AnalyticsTracker
+
+    @Inject lateinit var podcastAndEpisodeDetailsCoordinator: PodcastAndEpisodeDetailsCoordinator
 
     private val viewModel: EpisodeFragmentViewModel by viewModels()
     private var binding: FragmentEpisodeBinding? = null
-    private lateinit var imageLoader: PodcastImageLoader
+    private lateinit var imageRequestFactory: PocketCastsImageRequestFactory
 
     private var webView: WebView? = null
     private var formattedNotes: String? = null
     private lateinit var showNotesFormatter: ShowNotesFormatter
 
-    val episodeUUID: String?
-        get() = arguments?.getString(ARG_EPISODE_UUID)
+    private val args: EpisodeFragmentArgs
+        get() = extractArgs(arguments) ?: throw IllegalStateException("${this::class.java.simpleName} is missing arguments. It must be created with newInstance function")
+
+    private val episodeUUID: String
+        get() = args.episodeUuid
+
+    private val timestamp: Duration?
+        get() = args.timestamp
 
     private val episodeViewSource: EpisodeViewSource
-        get() = EpisodeViewSource.fromString(arguments?.getString(ARG_EPISODE_VIEW_SOURCE))
+        get() = args.source
 
-    val overridePodcastLink: Boolean
-        get() = arguments?.getBoolean(ARG_OVERRIDE_PODCAST_LINK) ?: false
+    private val overridePodcastLink: Boolean
+        get() = args.overridePodcastLink
 
     val podcastUuid: String?
-        get() = arguments?.getString(ARG_PODCAST_UUID)
+        get() = args.podcastUuid
 
     val fromListUuid: String?
-        get() = arguments?.getString(ARG_FROMLIST_UUID)
+        get() = args.fromListUuid
 
-    val forceDarkTheme: Boolean
-        get() = arguments?.getBoolean(ARG_FORCE_DARK) ?: false
+    private val autoPlay: Boolean
+        get() = args.autoPlay
+
+    private val forceDarkTheme: Boolean
+        get() = args.forceDark
 
     var listener: FragmentHostListener? = null
+    private var episodeLoadedListener: EpisodeLoadedListener? = null
 
     val activeTheme: Theme.ThemeType
         get() = if (forceDarkTheme && theme.isLightTheme) Theme.ThemeType.DARK else theme.activeTheme
 
-    override fun onCreateDialog(savedInstanceState: Bundle?): Dialog {
-        if (!forceDarkTheme || theme.isDarkTheme) {
-            showNotesFormatter = createShowNotesFormatter(requireContext())
-            return super.onCreateDialog(savedInstanceState)
+    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
+        val themeResId = if (!forceDarkTheme || theme.isDarkTheme) {
+            activeTheme.resourceId
+        } else {
+            R.style.ThemeDark
         }
+        val contextThemeWrapper = ContextThemeWrapper(requireContext(), themeResId)
+        val localInflater = inflater.cloneInContext(contextThemeWrapper)
+        binding = FragmentEpisodeBinding.inflate(localInflater, container, false)
 
-        val context = ContextThemeWrapper(requireContext(), UR.style.ThemeDark)
-        showNotesFormatter = createShowNotesFormatter(context)
-        return BottomSheetDialog(context, UR.style.BottomSheetDialogThemeDark)
+        showNotesFormatter = createShowNotesFormatter(contextThemeWrapper)
+
+        statusBarIconColor = StatusBarIconColor.Light
+        return binding?.root
     }
 
     private fun createShowNotesFormatter(context: Context): ShowNotesFormatter {
-        val showNotesFormatter = ShowNotesFormatter(settings, context)
+        val showNotesFormatter = ShowNotesFormatter(context)
         showNotesFormatter.apply {
             setBackgroundThemeColor(UR.attr.primary_ui_01)
             setTextThemeColor(UR.attr.primary_text_01)
@@ -189,31 +195,22 @@ class EpisodeFragment : BaseDialogFragment() {
     override fun onAttach(context: Context) {
         super.onAttach(context)
         listener = context as FragmentHostListener
-
-        imageLoader = PodcastImageLoaderThemed(context)
+        episodeLoadedListener = (parentFragment as? EpisodeLoadedListener)
+        imageRequestFactory = PocketCastsImageRequestFactory(context).themed()
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        episodeUUID?.let { episodeUuid ->
-            podcastUuid?.let { podcastUuid ->
-                if (!viewModel.isFragmentChangingConfigurations) {
-                    analyticsTracker.track(AnalyticsEvent.EPISODE_DETAIL_SHOWN, mapOf(AnalyticsProp.Key.SOURCE to episodeViewSource.value))
-                    FirebaseAnalyticsTracker.openedEpisode(podcastUuid, episodeUuid)
-                }
-            }
+        if (!viewModel.isFragmentChangingConfigurations) {
+            analyticsTracker.track(AnalyticsEvent.EPISODE_DETAIL_SHOWN, mapOf(AnalyticsProp.Key.SOURCE to episodeViewSource.value))
         }
-    }
-
-    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
-        binding = FragmentEpisodeBinding.inflate(inflater, container, false)
-        return binding?.root
     }
 
     override fun onDestroyView() {
         super.onDestroyView()
         if (!viewModel.isFragmentChangingConfigurations) {
             analyticsTracker.track(AnalyticsEvent.EPISODE_DETAIL_DISMISSED, mapOf(AnalyticsProp.Key.SOURCE to episodeViewSource.value))
+            podcastAndEpisodeDetailsCoordinator.onEpisodeDetailsDismissed?.invoke()
         }
         webView.cleanup()
         webView = null
@@ -223,25 +220,15 @@ class EpisodeFragment : BaseDialogFragment() {
     override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
         super.onViewCreated(view, savedInstanceState)
 
-        val bottomSheetDialog = dialog as? BottomSheetDialog
-        bottomSheetDialog?.behavior?.apply {
-            isFitToContents = false
-            state = BottomSheetBehavior.STATE_EXPANDED
-            skipCollapsed = true
-        }
-
-        // Ensure the dialog ends up the full height of the screen
-        // Bottom sheet dialogs get wrapped in a sheet that is WRAP_CONTENT so setting MATCH_PARENT on our
-        // root view is ignored.
-        bottomSheetDialog?.setOnShowListener {
-            view.updateLayoutParams<ViewGroup.LayoutParams> {
-                height = Resources.getSystem().displayMetrics.heightPixels
-            }
-        }
-
         binding?.loadingGroup?.isInvisible = true
 
-        viewModel.setup(episodeUUID!!, podcastUuid, forceDarkTheme)
+        viewModel.setup(
+            episodeUuid = episodeUUID,
+            podcastUuid = podcastUuid,
+            timestamp = timestamp,
+            autoPlay = autoPlay && savedInstanceState == null,
+            forceDark = forceDarkTheme,
+        )
         viewModel.state.observe(
             viewLifecycleOwner,
             Observer { state ->
@@ -251,11 +238,20 @@ class EpisodeFragment : BaseDialogFragment() {
                         binding.loadingGroup.isVisible = true
                         val iconColor = ThemeColor.podcastIcon02(activeTheme, state.tintColor)
 
-                        binding.episode = state.episode
-                        binding.podcast = state.podcast
-                        binding.tintColor = iconColor
-                        binding.toolbarTintColor = iconColor
-                        binding.podcastColor = ThemeColor.podcastIcon02(activeTheme, state.podcastColor)
+                        episodeLoadedListener?.onEpisodeLoaded(
+                            EpisodeToolbarState(
+                                tintColor = iconColor,
+                                episode = state.episode,
+                                onFavClicked = { viewModel.starClicked() },
+                                onShareClicked = { share(state) },
+                            ),
+                        )
+
+                        binding.lblTitle.text = state.episode.title
+                        binding.progressBar.progress = state.episode.playedPercentage
+                        binding.lblDate.setLongStyleDate(state.episode.publishedDate)
+                        binding.lblAuthor.text = state.podcast.title
+                        binding.lblAuthor.setTextColor(state.podcastColor)
 
                         binding.btnDownload.tintColor = iconColor
                         binding.btnAddToUpNext.tintColor = iconColor
@@ -282,17 +278,17 @@ class EpisodeFragment : BaseDialogFragment() {
                         val downloadSize = Util.formattedBytes(bytes = state.episode.sizeInBytes, context = binding.btnDownload.context).replace(
                             "-",
                             getString(
-                                LR.string.podcasts_download_download
-                            )
+                                LR.string.podcasts_download_download,
+                            ),
                         )
                         val episodeStatus = state.episode.episodeStatus
                         binding.btnDownload.state = when (episodeStatus) {
-                            EpisodeStatusEnum.NOT_DOWNLOADED -> DownloadButton.State.NotDownloaded(downloadSize)
-                            EpisodeStatusEnum.QUEUED -> DownloadButton.State.Queued
-                            EpisodeStatusEnum.DOWNLOADING -> DownloadButton.State.Downloading(state.downloadProgress)
-                            EpisodeStatusEnum.DOWNLOAD_FAILED -> DownloadButton.State.Errored
-                            EpisodeStatusEnum.DOWNLOADED -> DownloadButton.State.Downloaded(downloadSize)
-                            else -> DownloadButton.State.Queued
+                            EpisodeStatusEnum.NOT_DOWNLOADED -> DownloadButtonState.NotDownloaded(downloadSize)
+                            EpisodeStatusEnum.QUEUED -> DownloadButtonState.Queued
+                            EpisodeStatusEnum.DOWNLOADING -> DownloadButtonState.Downloading(state.downloadProgress)
+                            EpisodeStatusEnum.DOWNLOAD_FAILED -> DownloadButtonState.Errored
+                            EpisodeStatusEnum.DOWNLOADED -> DownloadButtonState.Downloaded(downloadSize)
+                            else -> DownloadButtonState.Queued
                         }
 
                         val playbackError = state.episode.playErrorDetails
@@ -330,35 +326,27 @@ class EpisodeFragment : BaseDialogFragment() {
                         }
 
                         // If we aren't showing another error we can show the episode limit warning
-                        if (!state.episode.isArchived && !binding.errorLayout.isVisible && state.episode.excludeFromEpisodeLimit && state.podcast.autoArchiveEpisodeLimit != null) {
+                        val autoArchiveLimit = state.podcast.autoArchiveEpisodeLimit?.value
+                        if (!state.episode.isArchived && !binding.errorLayout.isVisible && state.episode.excludeFromEpisodeLimit && autoArchiveLimit != null) {
                             binding.errorLayout.isVisible = true
                             binding.lblErrorDetail.isVisible = true
                             binding.lblError.setText(LR.string.podcast_episode_manually_unarchived)
-                            binding.lblErrorDetail.text = getString(LR.string.podcast_episode_manually_unarchived_summary, state.podcast.autoArchiveEpisodeLimit)
+                            binding.lblErrorDetail.text = getString(LR.string.podcast_episode_manually_unarchived_summary, autoArchiveLimit)
                             binding.imgError.setImageResource(IR.drawable.ic_archive)
                         }
 
-                        binding.btnShare.setOnClickListener {
-                            share(state)
-                        }
-
-                        binding.btnFav.contentDescription = getString(if (state.episode.isStarred) LR.string.podcast_episode_starred else LR.string.podcast_episode_unstarred)
-
-                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                            // Doesn't work in data binding for some reason maybe because of the API limit
-                            binding.lblAuthor.compoundDrawableTintList = ColorStateList.valueOf(iconColor)
-                        }
+                        TextViewCompat.setCompoundDrawableTintList(binding.lblAuthor, ColorStateList.valueOf(iconColor))
                         binding.lblAuthor.setOnClickListener {
                             analyticsTracker.track(
                                 AnalyticsEvent.EPISODE_DETAIL_PODCAST_NAME_TAPPED,
                                 mapOf(
                                     AnalyticsProp.Key.EPISODE_UUID to state.episode.uuid,
-                                    AnalyticsProp.Key.SOURCE to EpisodeViewSource.PODCAST_SCREEN.value
-                                )
+                                    AnalyticsProp.Key.SOURCE to EpisodeViewSource.PODCAST_SCREEN.value,
+                                ),
                             )
-                            dismiss()
+                            (parentFragment as? BaseDialogFragment)?.dismiss()
                             if (!overridePodcastLink) {
-                                (listener as FragmentHostListener).openPodcastPage(state.podcast.uuid)
+                                (listener as FragmentHostListener).openPodcastPage(state.podcast.uuid, SourceView.EPISODE_DETAILS.analyticsValue)
                             }
                         }
 
@@ -373,30 +361,33 @@ class EpisodeFragment : BaseDialogFragment() {
                                 .show()
                             true
                         }
-                        binding.podcastArtwork.let {
-                            imageLoader.largePlaceholder().load(state.podcast).into(it)
-                        }
+                        imageRequestFactory.create(state.episode, settings.artworkConfiguration.value.useEpisodeArtwork).loadInto(binding.podcastArtwork)
 
                         binding.btnPlay.setOnPlayClicked {
                             val context = binding.root.context
                             val shouldClose = if (viewModel.shouldShowStreamingWarning(context)) {
                                 warningsHelper.streamingWarningDialog(onConfirm = {
                                     val shouldCloseAfterWarning = viewModel.playClickedGetShouldClose(
-                                        warningsHelper,
+                                        warningsHelper = warningsHelper,
+                                        showedStreamWarning = true,
                                         force = true,
-                                        fromListUuid = fromListUuid
+                                        fromListUuid = fromListUuid,
                                     )
                                     if (shouldCloseAfterWarning) {
-                                        dismiss()
+                                        (parentFragment as? BaseDialogFragment)?.dismiss()
                                     }
                                 }).show(parentFragmentManager, "stream warning")
                                 false
                             } else {
-                                viewModel.playClickedGetShouldClose(warningsHelper, fromListUuid = fromListUuid)
+                                viewModel.playClickedGetShouldClose(
+                                    warningsHelper = warningsHelper,
+                                    showedStreamWarning = false,
+                                    fromListUuid = fromListUuid,
+                                )
                             }
 
                             if (shouldClose) {
-                                dismiss()
+                                (parentFragment as? BaseDialogFragment)?.dismiss()
                             }
                         }
                     }
@@ -404,21 +395,29 @@ class EpisodeFragment : BaseDialogFragment() {
                         Timber.e("Could not load episode $episodeUUID: ${state.error.message}")
                     }
                 }
-            }
+            },
         )
 
-        // Ideally this would all be contained in the viewmodel state observable but webview flickers when updating
-        viewModel.showNotes.observe(viewLifecycleOwner) { showNotes ->
-            formattedNotes = showNotesFormatter.format(showNotes) ?: showNotes
-            loadShowNotes(formattedNotes ?: "")
+        viewModel.showNotesState.observe(viewLifecycleOwner) { showNotesState ->
+            when (showNotesState) {
+                is ShowNotesState.Loaded -> {
+                    val showNotes = showNotesState.showNotes
+                    formattedNotes = showNotesFormatter.format(showNotes) ?: showNotes
+                    loadShowNotes(formattedNotes ?: "")
+                }
+                is ShowNotesState.Error, is ShowNotesState.NotFound -> {
+                    formattedNotes = ""
+                    loadShowNotes("")
+                }
+                is ShowNotesState.Loading -> {
+                    // Do nothing as the starting state is loading
+                }
+            }
         }
 
         binding?.btnArchive?.let { button ->
             button.onStateChange = {
                 viewModel.archiveClicked(button.isOn)
-                if (button.isOn) {
-                    dismiss()
-                }
             }
         }
 
@@ -457,7 +456,6 @@ class EpisodeFragment : BaseDialogFragment() {
             binding?.btnPlay?.setPlaying(isPlaying = isPlaying, animate = true)
         }
 
-        binding?.btnClose?.setOnClickListener { dismiss() }
         binding?.btnDownload?.setOnClickListener {
             val episode = viewModel.episode ?: return@setOnClickListener
             if (episode.isDownloaded) {
@@ -466,15 +464,15 @@ class EpisodeFragment : BaseDialogFragment() {
                     .addTextOption(
                         titleId = LR.string.podcast_file_remove,
                         titleColor = it.context.getThemeColor(UR.attr.support_05),
-                        click = { viewModel.deleteDownloadedEpisode() }
+                        click = { viewModel.deleteDownloadedEpisode() },
                     )
                 activity?.supportFragmentManager?.let { fragmentManager ->
                     dialog.show(fragmentManager, "confirm_archive_all")
                 }
             } else {
                 context?.let { context ->
-                    if (settings.warnOnMeteredNetwork() && !Network.isUnmeteredConnection(context) && viewModel.shouldDownload()) {
-                        warningsHelper.downloadWarning(episodeUUID!!, "episode card")
+                    if (settings.warnOnMeteredNetwork.value && !Network.isUnmeteredConnection(context) && viewModel.shouldDownload()) {
+                        warningsHelper.downloadWarning(episodeUUID, "episode card")
                             .show(parentFragmentManager, "download warning")
                     } else {
                         viewModel.downloadEpisode()
@@ -482,8 +480,6 @@ class EpisodeFragment : BaseDialogFragment() {
                 }
             }
         }
-
-        binding?.btnFav?.setOnClickListener { viewModel.starClicked() }
 
         binding?.btnAddToUpNext?.setup(ToggleActionButton.State.On(LR.string.podcasts_up_next, IR.drawable.ic_upnext_remove), ToggleActionButton.State.Off(LR.string.podcasts_up_next, IR.drawable.ic_upnext_playnext), false)
         binding?.btnPlayed?.setup(ToggleActionButton.State.On(LR.string.podcasts_mark_unplayed, IR.drawable.ic_markasunplayed), ToggleActionButton.State.Off(LR.string.podcasts_mark_played, IR.drawable.ic_markasplayed), false)
@@ -520,6 +516,8 @@ class EpisodeFragment : BaseDialogFragment() {
                     // stopping the white flash on web player load
                     setBackgroundColor(Color.argb(1, 0, 0, 0))
                     isVerticalScrollBarEnabled = false
+                    // stop the web view jumping after loading
+                    isFocusable = false
                     webViewClient = object : WebViewClient() {
                         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                             val url = request.url.toString()
@@ -534,8 +532,8 @@ class EpisodeFragment : BaseDialogFragment() {
                                     AnalyticsEvent.EPISODE_DETAIL_SHOW_NOTES_LINK_TAPPED,
                                     mapOf(
                                         AnalyticsProp.Key.EPISODE_UUID to episodeUuid,
-                                        AnalyticsProp.Key.SOURCE to EpisodeViewSource.PODCAST_SCREEN.value
-                                    )
+                                        AnalyticsProp.Key.SOURCE to EpisodeViewSource.PODCAST_SCREEN.value,
+                                    ),
                                 )
                             }
 
@@ -580,13 +578,38 @@ class EpisodeFragment : BaseDialogFragment() {
     }
 
     private fun share(state: EpisodeFragmentState.Loaded) {
-        ShareDialog(
-            state.podcast,
-            state.episode,
-            parentFragmentManager,
-            context,
-            shouldShowPodcast = false,
-            analyticsTracker = analyticsTracker,
-        ).show()
+        if (state.podcast.canShare) {
+            ShareDialogFragment.newInstance(
+                state.podcast,
+                state.episode,
+                SourceView.EPISODE_DETAILS,
+                options = listOf(ShareDialogFragment.Options.Episode),
+            ).show(parentFragmentManager, "share_dialog")
+        } else {
+            Toast.makeText(context, LR.string.sharing_is_not_available_for_private_podcasts, Toast.LENGTH_LONG).show()
+        }
     }
+
+    interface EpisodeLoadedListener {
+        fun onEpisodeLoaded(state: EpisodeToolbarState)
+    }
+
+    data class EpisodeToolbarState(
+        val tintColor: Int,
+        val episode: PodcastEpisode,
+        val onShareClicked: () -> Unit,
+        val onFavClicked: () -> Unit,
+    )
+
+    @Parcelize
+    data class EpisodeFragmentArgs(
+        val episodeUuid: String,
+        val source: EpisodeViewSource,
+        val overridePodcastLink: Boolean = false,
+        val podcastUuid: String? = null,
+        val fromListUuid: String? = null,
+        val forceDark: Boolean = false,
+        val autoPlay: Boolean = false,
+        @TypeParceler<Duration?, DurationParceler>() val timestamp: Duration? = null,
+    ) : Parcelable
 }

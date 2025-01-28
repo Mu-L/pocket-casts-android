@@ -5,25 +5,22 @@ import au.com.shiftyjelly.pocketcasts.models.entity.Folder
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
 import au.com.shiftyjelly.pocketcasts.models.to.FolderItem
 import au.com.shiftyjelly.pocketcasts.models.type.PodcastsSortType
-import au.com.shiftyjelly.pocketcasts.models.type.PodcastsSortType.DATE_ADDED_OLDEST_TO_NEWEST
-import au.com.shiftyjelly.pocketcasts.models.type.PodcastsSortType.DRAG_DROP
 import au.com.shiftyjelly.pocketcasts.models.type.PodcastsSortType.EPISODE_DATE_NEWEST_TO_OLDEST
-import au.com.shiftyjelly.pocketcasts.models.type.PodcastsSortType.NAME_A_TO_Z
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import io.reactivex.Flowable
 import io.reactivex.Single
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.flow.Flow
 import java.util.Date
 import java.util.UUID
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
 
 class FolderManagerImpl @Inject constructor(
     appDatabase: AppDatabase,
     private val podcastManager: PodcastManager,
-    private val settings: Settings
+    private val settings: Settings,
 ) : FolderManager, CoroutineScope {
 
     private val folderDao = appDatabase.folderDao()
@@ -42,7 +39,7 @@ class FolderManagerImpl @Inject constructor(
             sortPosition = 0,
             podcastsSortType = podcastsSortType,
             deleted = false,
-            syncModified = System.currentTimeMillis()
+            syncModified = System.currentTimeMillis(),
         )
 
         folderDao.insert(newFolder)
@@ -72,6 +69,10 @@ class FolderManagerImpl @Inject constructor(
         }
         // mark the folder as deleted, only signed in paid Pocket Casts users have the folder feature.
         folderDao.updateDeleted(uuid = folder.uuid, deleted = true, syncModified = System.currentTimeMillis())
+    }
+
+    override suspend fun deleteAll() {
+        folderDao.deleteAll()
     }
 
     override suspend fun deleteSynced(folderUuid: String) {
@@ -111,7 +112,7 @@ class FolderManagerImpl @Inject constructor(
     }
 
     override fun observeFolders(): Flowable<List<Folder>> {
-        return folderDao.observeFolders()
+        return folderDao.findFoldersRxFlowable()
     }
 
     override fun findFoldersFlow(): Flow<List<Folder>> {
@@ -119,15 +120,7 @@ class FolderManagerImpl @Inject constructor(
     }
 
     override fun findFoldersSingle(): Single<List<Folder>> {
-        return folderDao.findFoldersSingle()
-    }
-
-    override fun findByUuidFlowable(uuid: String): Flowable<List<Folder>> {
-        return folderDao.findByUuidFlowable(uuid)
-    }
-
-    override fun findByUuidFlow(uuid: String): Flow<List<Folder>> {
-        return folderDao.findByUuidFlow(uuid)
+        return folderDao.findFoldersRxSingle()
     }
 
     override suspend fun updatePositions(folders: List<Folder>) {
@@ -158,21 +151,21 @@ class FolderManagerImpl @Inject constructor(
         updatePositions(folders)
     }
 
-    override fun findFoldersToSync(): List<Folder> {
-        return folderDao.findNotSynced()
+    override fun findFoldersToSyncBlocking(): List<Folder> {
+        return folderDao.findNotSyncedBlocking()
     }
 
-    override fun markAllSynced() {
+    override suspend fun markAllSynced() {
         folderDao.updateAllSynced()
     }
 
     override suspend fun getHomeFolder(): List<FolderItem> {
-        val sortType = settings.getPodcastsSortType()
+        val sortType = settings.podcastsSortType.value
 
         val podcasts = if (sortType == EPISODE_DATE_NEWEST_TO_OLDEST) {
             podcastManager.findPodcastsOrderByLatestEpisode(orderAsc = false)
         } else {
-            podcastManager.findSubscribed()
+            podcastManager.findSubscribedNoOrder()
         }
         val folders = folderDao.findFolders()
         val folderItems = combineFoldersPodcasts(folders, podcasts)
@@ -215,45 +208,5 @@ class FolderManagerImpl @Inject constructor(
         return podcasts.sortedWith(folder.podcastsSortType.podcastComparator)
     }
 
-    private fun buildHomeFolderItems(podcasts: List<Podcast>, folders: List<FolderItem>, podcastSortType: PodcastsSortType): List<FolderItem> {
-        if (podcastSortType == EPISODE_DATE_NEWEST_TO_OLDEST) {
-            val items = mutableListOf<FolderItem>()
-            val uuidToFolder = folders.associateBy({ it.uuid }, { it }).toMutableMap()
-            for (podcast in podcasts) {
-                if (podcast.folderUuid == null) {
-                    items.add(FolderItem.Podcast(podcast))
-                } else {
-                    // add the folder in the position of the podcast with the latest release date
-                    val folder = uuidToFolder.remove(podcast.folderUuid)
-                    if (folder != null) {
-                        items.add(folder)
-                    }
-                }
-            }
-            if (uuidToFolder.isNotEmpty()) {
-                items.addAll(uuidToFolder.values)
-            }
-            return items
-        } else {
-            val folderUuids = folders.map { it.uuid }.toHashSet()
-            val items = podcasts
-                // add the podcasts not in a folder or if the folder doesn't exist
-                .filter { podcast -> podcast.folderUuid == null || !folderUuids.contains(podcast.folderUuid) }
-                .map { FolderItem.Podcast(it) }
-                .toMutableList<FolderItem>()
-                // add the folders
-                .apply { addAll(folders) }
-
-            val itemsSorted = when (podcastSortType) {
-                NAME_A_TO_Z -> items.sortedWith(compareBy { PodcastsSortType.cleanStringForSort(it.title) })
-                DATE_ADDED_OLDEST_TO_NEWEST -> items.sortedWith(compareBy { it.addedDate })
-                DRAG_DROP -> items.sortedWith(compareBy { it.sortPosition })
-                else -> items
-            }
-
-            return itemsSorted
-        }
-    }
-
-    override fun countFolders() = folderDao.count()
+    override suspend fun countFolders() = folderDao.count()
 }

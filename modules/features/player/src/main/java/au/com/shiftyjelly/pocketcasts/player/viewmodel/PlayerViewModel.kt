@@ -1,37 +1,41 @@
 package au.com.shiftyjelly.pocketcasts.player.viewmodel
 
 import android.content.Context
-import android.content.res.Resources
+import android.text.format.DateUtils
+import androidx.annotation.StringRes
 import androidx.lifecycle.LiveData
-import androidx.lifecycle.LiveDataReactiveStreams
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.toLiveData
+import androidx.lifecycle.viewModelScope
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.analytics.EpisodeAnalytics
-import au.com.shiftyjelly.pocketcasts.models.db.helper.UserEpisodePodcastSubstitute
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.entity.UserEpisode
 import au.com.shiftyjelly.pocketcasts.models.to.Chapter
+import au.com.shiftyjelly.pocketcasts.models.to.ChapterSummaryData
 import au.com.shiftyjelly.pocketcasts.models.to.Chapters
 import au.com.shiftyjelly.pocketcasts.models.to.PlaybackEffects
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeStatusEnum
-import au.com.shiftyjelly.pocketcasts.player.R
-import au.com.shiftyjelly.pocketcasts.player.view.ShelfItem
-import au.com.shiftyjelly.pocketcasts.player.view.ShelfItems
+import au.com.shiftyjelly.pocketcasts.models.type.EpisodeViewSource
 import au.com.shiftyjelly.pocketcasts.player.view.UpNextPlaying
+import au.com.shiftyjelly.pocketcasts.player.view.bookmark.BookmarkArguments
 import au.com.shiftyjelly.pocketcasts.player.view.dialog.ClearUpNextDialog
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
+import au.com.shiftyjelly.pocketcasts.preferences.model.ArtworkConfiguration
+import au.com.shiftyjelly.pocketcasts.repositories.bookmark.BookmarkManager
+import au.com.shiftyjelly.pocketcasts.repositories.di.ApplicationScope
+import au.com.shiftyjelly.pocketcasts.repositories.di.IoDispatcher
 import au.com.shiftyjelly.pocketcasts.repositories.download.DownloadHelper
 import au.com.shiftyjelly.pocketcasts.repositories.download.DownloadManager
-import au.com.shiftyjelly.pocketcasts.repositories.extensions.getUrlForArtwork
-import au.com.shiftyjelly.pocketcasts.repositories.extensions.saveToGlobalSettings
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackState
 import au.com.shiftyjelly.pocketcasts.repositories.playback.SleepTimer
+import au.com.shiftyjelly.pocketcasts.repositories.playback.SleepTimerState
 import au.com.shiftyjelly.pocketcasts.repositories.playback.UpNextQueue
 import au.com.shiftyjelly.pocketcasts.repositories.playback.UpNextSource
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
@@ -39,10 +43,9 @@ import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.UserEpisodeManager
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 import au.com.shiftyjelly.pocketcasts.utils.Util
+import au.com.shiftyjelly.pocketcasts.utils.featureflag.Feature
+import au.com.shiftyjelly.pocketcasts.utils.featureflag.FeatureFlag
 import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
-import au.com.shiftyjelly.pocketcasts.views.dialog.ConfirmationDialog
-import au.com.shiftyjelly.pocketcasts.views.helper.CloudDeleteHelper
-import au.com.shiftyjelly.pocketcasts.views.helper.DeleteState
 import com.jakewharton.rxrelay2.BehaviorRelay
 import dagger.hilt.android.lifecycle.HiltViewModel
 import dagger.hilt.android.qualifiers.ApplicationContext
@@ -51,18 +54,24 @@ import io.reactivex.Flowable
 import io.reactivex.Observable
 import io.reactivex.android.schedulers.AndroidSchedulers
 import io.reactivex.disposables.CompositeDisposable
-import io.reactivex.rxkotlin.Flowables
 import io.reactivex.rxkotlin.Observables
+import io.reactivex.rxkotlin.subscribeBy
 import io.reactivex.schedulers.Schedulers
+import javax.inject.Inject
+import kotlin.coroutines.CoroutineContext
+import kotlin.time.Duration.Companion.milliseconds
+import kotlin.time.DurationUnit
+import kotlin.time.toDuration
+import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableSharedFlow
-import kotlinx.coroutines.flow.SharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.rx2.asObservable
+import kotlinx.coroutines.withContext
+import okhttp3.HttpUrl
 import timber.log.Timber
-import javax.inject.Inject
-import kotlin.coroutines.CoroutineContext
-import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @HiltViewModel
@@ -70,37 +79,30 @@ class PlayerViewModel @Inject constructor(
     private val playbackManager: PlaybackManager,
     private val episodeManager: EpisodeManager,
     private val userEpisodeManager: UserEpisodeManager,
-    private val downloadManager: DownloadManager,
     private val podcastManager: PodcastManager,
+    private val bookmarkManager: BookmarkManager,
+    private val downloadManager: DownloadManager,
     private val sleepTimer: SleepTimer,
     private val settings: Settings,
     private val theme: Theme,
-    private val analyticsTracker: AnalyticsTrackerWrapper,
+    private val analyticsTracker: AnalyticsTracker,
     private val episodeAnalytics: EpisodeAnalytics,
     @ApplicationContext private val context: Context,
+    @ApplicationScope private val applicationScope: CoroutineScope,
+    @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
 ) : ViewModel(), CoroutineScope {
 
     override val coroutineContext: CoroutineContext
         get() = Dispatchers.Default
 
-    sealed class Artwork {
-        data class Url(val url: String) : Artwork()
-        data class Path(val path: String) : Artwork()
-        object None : Artwork()
-    }
-
-    data class PodcastEffectsPair(val podcast: Podcast, val effects: PlaybackEffects)
+    data class PodcastEffectsData(val podcast: Podcast, val effects: PlaybackEffects, val showCustomEffectsSettings: Boolean = true)
     data class PlayerHeader(
         val positionMs: Int = 0,
         val durationMs: Int = -1,
         val isPlaying: Boolean = false,
         val isPrepared: Boolean = false,
-        val podcastUuid: String? = "",
-        val episodeUuid: String = "",
-        val episodeTitle: String = "",
+        val episode: BaseEpisode? = null,
         val podcastTitle: String? = null,
-        val isVideo: Boolean = false,
-        val isStarred: Boolean = false,
         val isPlaybackRemote: Boolean = false,
         val chapters: Chapters = Chapters(),
         val backgroundColor: Int = 0xFF000000.toInt(),
@@ -109,19 +111,31 @@ class PlayerViewModel @Inject constructor(
         val skipBackwardInSecs: Int = 30,
         val isSleepRunning: Boolean = false,
         val isEffectsOn: Boolean = false,
+        val adjustRemainingTimeDuration: Boolean = false,
+        val playbackEffects: PlaybackEffects = PlaybackEffects(),
         val isBuffering: Boolean = false,
-        val downloadStatus: EpisodeStatusEnum = EpisodeStatusEnum.NOT_DOWNLOADED,
         val bufferedUpToMs: Int = 0,
-        val embeddedArtwork: Artwork = Artwork.None,
-        val isUserEpisode: Boolean = false,
-        val theme: Theme.ThemeType = Theme.ThemeType.DARK
+        val theme: Theme.ThemeType = Theme.ThemeType.DARK,
+        val useEpisodeArtwork: Boolean = false,
     ) {
+        val podcastUuid = (episode as? PodcastEpisode)?.podcastUuid
+        val episodeUuid = episode?.uuid.orEmpty()
+        val episodeTitle = episode?.title.orEmpty()
+        val isVideo = episode?.isVideo == true
+        val isStarred = (episode as? PodcastEpisode)?.isStarred == true
+        val isUserEpisode = episode is UserEpisode
 
         val isChaptersPresent: Boolean = !chapters.isEmpty
-        val chapter: Chapter? = chapters.getChapter(positionMs)
-        val chapterSummary: String = chapters.getChapterSummary(positionMs)
-        val isFirstChapter: Boolean = chapters.isFirstChapter(positionMs)
-        val isLastChapter: Boolean = chapters.isLastChapter(positionMs)
+        val chapter: Chapter? = chapters.getChapter(positionMs.milliseconds)
+        val chapterProgress: Float = chapter?.calculateProgress(positionMs.milliseconds) ?: 0f
+        val chapterTimeRemaining: String = chapter?.remainingTime(
+            playbackPosition = positionMs.milliseconds,
+            playbackSpeed = playbackEffects.playbackSpeed,
+            adjustRemainingTimeDuration = adjustRemainingTimeDuration,
+        ) ?: ""
+        val chapterSummary: ChapterSummaryData = chapters.getChapterSummary(positionMs.milliseconds)
+        val isFirstChapter: Boolean = chapters.isFirstChapter(positionMs.milliseconds)
+        val isLastChapter: Boolean = chapters.isLastChapter(positionMs.milliseconds)
         val isChapterImagePresent = chapter?.isImagePresent ?: false
         val title = chapter?.title ?: episodeTitle
 
@@ -138,23 +152,18 @@ class PlayerViewModel @Inject constructor(
         }
     }
 
-    data class ChaptersHeader(val expanded: Boolean)
     data class UpNextSummary(val episodeCount: Int, val totalTimeSecs: Double)
 
     data class ListData(
         var podcastHeader: PlayerHeader,
         var chaptersExpanded: Boolean,
-        var chapters: List<Chapter>,
+        var chapters: Chapters,
         var currentChapter: Chapter?,
         var upNextExpanded: Boolean,
-        var upNextEpisodes: List<Playable>,
+        var upNextEpisodes: List<BaseEpisode>,
         var upNextSummary: UpNextSummary,
-    ) {
-        fun isSameChapter(chapter: Chapter) = currentChapter?.let { it.index == chapter.index } ?: false
-    }
-    private val source = AnalyticsSource.PLAYER
-    private val _showPlayerFlow = MutableSharedFlow<Unit>()
-    val showPlayerFlow: SharedFlow<Unit> = _showPlayerFlow
+    )
+    private val source = SourceView.PLAYER
 
     var upNextExpanded = settings.getBooleanForKey(Settings.PREFERENCE_UPNEXT_EXPANDED, true)
     var chaptersExpanded = settings.getBooleanForKey(Settings.PREFERENCE_CHAPTERS_EXPANDED, true)
@@ -172,64 +181,41 @@ class PlayerViewModel @Inject constructor(
     val listDataRx = Observables.combineLatest(
         upNextStateObservable,
         playbackStateObservable,
-        settings.skipBackwardInSecsObservable,
-        settings.skipForwardInSecsObservable,
+        settings.skipBackInSecs.flow.asObservable(coroutineContext),
+        settings.skipForwardInSecs.flow.asObservable(coroutineContext),
         upNextExpandedObservable,
         chaptersExpandedObservable,
-        settings.playbackEffectsObservable,
-        this::mergeListData
+        settings.useRealTimeForPlaybackRemaingTime.flow.asObservable(coroutineContext),
+        settings.artworkConfiguration.flow.asObservable(coroutineContext),
+        sleepTimer.stateFlow.asObservable(coroutineContext),
+        this::mergeListData,
     )
         .distinctUntilChanged()
         .toFlowable(BackpressureStrategy.LATEST)
-    val listDataLive: LiveData<ListData> = LiveDataReactiveStreams.fromPublisher(listDataRx)
-    val playingEpisodeLive: LiveData<Pair<Playable, Int>> = LiveDataReactiveStreams.fromPublisher(
+    val listDataLive: LiveData<ListData> = listDataRx.toLiveData()
+    val playingEpisodeLive: LiveData<Pair<BaseEpisode, Int>> =
         listDataRx.map { Pair(it.podcastHeader.episodeUuid, it.podcastHeader.backgroundColor) }
             .distinctUntilChanged()
-            .switchMap { pair -> episodeManager.observePlayableByUuid(pair.first).map { Pair(it, pair.second) } }
-    )
+            .switchMap { pair -> episodeManager.findEpisodeByUuidRxFlowable(pair.first).map { Pair(it, pair.second) } }
+            .toLiveData()
 
-    private val shelfObservable = settings.shelfItemsObservable.map { list ->
-        if (list.isEmpty()) {
-            ShelfItems.itemsList
-        } else {
-            list.mapNotNull { id ->
-                ShelfItems.itemForId(id)
-            }
-        }
-    }.toFlowable(BackpressureStrategy.LATEST)
-
-    private val shelfUpNext = upNextStateObservable.distinctUntilChanged { t1, t2 ->
-        val entry1 = t1 as? UpNextQueue.State.Loaded ?: return@distinctUntilChanged false
-        val entry2 = t2 as? UpNextQueue.State.Loaded ?: return@distinctUntilChanged false
-
-        return@distinctUntilChanged (entry1.episode as? Episode)?.isStarred == (entry2.episode as? Episode)?.isStarred && entry1.episode.episodeStatus == entry2.episode.episodeStatus && entry1.podcast?.isUsingEffects == entry2.podcast?.isUsingEffects
-    }
-
-    private val trimmedShelfObservable = Flowables.combineLatest(shelfUpNext.toFlowable(BackpressureStrategy.LATEST), shelfObservable).map { (upNextState, shelf) ->
-        val episode = (upNextState as? UpNextQueue.State.Loaded)?.episode
-        val isUserEpisode = episode is UserEpisode
-        val trimmedShelf = if (isUserEpisode) shelf.filter { it.shownWhen == ShelfItem.Shown.UserEpisodeOnly || it.shownWhen == ShelfItem.Shown.Always } else shelf.filter { it.shownWhen == ShelfItem.Shown.EpisodeOnly || it.shownWhen == ShelfItem.Shown.Always }
-        return@map Pair(trimmedShelf, episode)
-    }
-
-    val shelfLive: LiveData<List<ShelfItem>> = LiveDataReactiveStreams.fromPublisher(shelfObservable)
-    val trimmedShelfLive: LiveData<Pair<List<ShelfItem>, Playable?>> = LiveDataReactiveStreams.fromPublisher(trimmedShelfObservable)
+    private var playbackPositionMs: Int = 0
 
     val upNextPlusData = upNextStateObservable.map { upNextState ->
         var episodeCount = 0
         var totalTime = 0.0
-        var upNextEpisodes = emptyList<Playable>()
-        var nowPlaying: Playable? = null
+        var upNextEpisodes = emptyList<BaseEpisode>()
+        var nowPlaying: BaseEpisode? = null
         if (upNextState is UpNextQueue.State.Loaded) {
             nowPlaying = upNextState.episode
             upNextEpisodes = upNextState.queue
             episodeCount = upNextState.queue.size
 
             val countEpisodes = listOf(nowPlaying) + upNextEpisodes
-            for (playable in countEpisodes) {
-                totalTime += playable.duration
-                if (playable.isInProgress) {
-                    totalTime -= playable.playedUpTo
+            for (countEpisode in countEpisodes) {
+                totalTime += countEpisode.duration
+                if (countEpisode.isInProgress) {
+                    totalTime -= countEpisode.playedUpTo
                 }
             }
         }
@@ -245,36 +231,58 @@ class PlayerViewModel @Inject constructor(
         return@map listOfNotNull(nowPlayingInfo, upNextSummary) + upNextEpisodes
     }
 
-    val upNextLive: LiveData<List<Any>> = LiveDataReactiveStreams.fromPublisher(upNextPlusData.toFlowable(BackpressureStrategy.LATEST))
+    val upNextLive: LiveData<List<Any>> = upNextPlusData.toFlowable(BackpressureStrategy.LATEST).toLiveData()
 
-    val effectsObservable: Flowable<PodcastEffectsPair> = playbackStateObservable
+    val effectsObservable: Flowable<PodcastEffectsData> = playbackStateObservable
         .toFlowable(BackpressureStrategy.LATEST)
         .map { it.episodeUuid }
-        .switchMap { episodeManager.observePlayableByUuid(it) }
+        .switchMap { episodeManager.findEpisodeByUuidRxFlowable(it) }
         .switchMap {
-            if (it is Episode) {
-                podcastManager.observePodcastByUuid(it.podcastUuid)
+            if (it is PodcastEpisode) {
+                podcastManager.podcastByUuidRxFlowable(it.podcastUuid)
             } else {
-                Flowable.just(Podcast(uuid = UserEpisodePodcastSubstitute.substituteUuid, title = UserEpisodePodcastSubstitute.substituteTitle, overrideGlobalEffects = false))
+                Flowable.just(Podcast.userPodcast.copy(overrideGlobalEffects = false))
             }
         }
-        .map { PodcastEffectsPair(it, if (it.overrideGlobalEffects) it.playbackEffects else settings.getGlobalPlaybackEffects()) }
+        .map { podcast ->
+            val isUserPodcast = podcast.uuid == Podcast.userPodcast.uuid
+            PodcastEffectsData(
+                podcast = podcast,
+                effects = if (podcast.overrideGlobalEffects) podcast.playbackEffects else settings.globalPlaybackEffects.value,
+                showCustomEffectsSettings = !isUserPodcast,
+            )
+        }
         .doOnNext { Timber.i("Effects: Podcast: ${it.podcast.overrideGlobalEffects} ${it.effects}") }
         .observeOn(AndroidSchedulers.mainThread())
-    val effectsLive = LiveDataReactiveStreams.fromPublisher(effectsObservable)
+    val effectsLive = effectsObservable.toLiveData()
 
-    var episode: Playable? = null
+    private val _navigationState: MutableSharedFlow<NavigationState> = MutableSharedFlow()
+    val navigationState = _navigationState.asSharedFlow()
+
+    private val _snackbarMessages = MutableSharedFlow<SnackbarMessage>()
+    val snackbarMessages = _snackbarMessages.asSharedFlow()
+
+    var episode: BaseEpisode? = null
     var podcast: Podcast? = null
 
     val isSleepRunning = MutableLiveData<Boolean>().apply { postValue(false) }
-    val isSleepAtEndOfEpisode = MutableLiveData<Boolean>().apply { postValue(false) }
+    val isSleepAtEndOfEpisodeOrChapter = MutableLiveData<Boolean>().apply { postValue(false) }
     val sleepTimeLeftText = MutableLiveData<String>()
     val sleepCustomTimeText = MutableLiveData<String>().apply {
         postValue(calcCustomTimeText())
     }
-    var sleepCustomTimeMins: Int = 5
+    val sleepEndOfEpisodesText = MutableLiveData<String>().apply {
+        postValue(calcEndOfEpisodeText())
+    }
+    val sleepEndOfChaptersText = MutableLiveData<String>().apply {
+        postValue(calcEndOfChapterText())
+    }
+    val sleepingInText = MutableLiveData<String>().apply {
+        postValue(calcSleepingInEpisodesText())
+    }
+    var sleepCustomTimeInMinutes: Int = 5
         set(value) {
-            field = value.coerceIn(5, 240)
+            field = value.coerceIn(1, 240)
             settings.setSleepTimerCustomMins(field)
             sleepCustomTimeText.postValue(calcCustomTimeText())
             updateSleepTimer()
@@ -283,32 +291,77 @@ class PlayerViewModel @Inject constructor(
             return settings.getSleepTimerCustomMins()
         }
 
-    init {
-        updateSleepTimer()
+    fun setSleepEndOfChapters(chapters: Int = 1, shouldCallUpdateTimer: Boolean = true) {
+        val newValue = chapters.coerceIn(1, 240)
+        settings.setSleepEndOfChapters(newValue)
+        sleepEndOfChaptersText.postValue(calcEndOfChapterText())
+        sleepingInText.postValue(calcSleepingInChaptersText())
+        if (shouldCallUpdateTimer) {
+            updateSleepTimer()
+        }
     }
 
-    fun mergeListData(upNextState: UpNextQueue.State, playbackState: PlaybackState, skipBackwardInSecs: Int, skipForwardInSecs: Int, upNextExpanded: Boolean, chaptersExpanded: Boolean, globalPlaybackEffects: PlaybackEffects): ListData {
+    fun getSleepEndOfChapters(): Int = settings.getSleepEndOfChapters()
+
+    fun setSleepEndOfEpisodes(episodes: Int = 1, shouldCallUpdateTimer: Boolean = true) {
+        val newValue = episodes.coerceIn(1, 240)
+        settings.setSleepEndOfEpisodes(newValue)
+        sleepEndOfEpisodesText.postValue(calcEndOfEpisodeText())
+        sleepingInText.postValue(calcSleepingInEpisodesText())
+        if (shouldCallUpdateTimer) {
+            updateSleepTimer()
+        }
+    }
+
+    fun getSleepEndOfEpisodes(): Int = settings.getSleepEndOfEpisodes()
+
+    init {
+        updateSleepTimer()
+        monitorPlaybackPosition()
+    }
+
+    private fun monitorPlaybackPosition() {
+        playbackStateObservable
+            .map { it.positionMs }
+            .toFlowable(BackpressureStrategy.LATEST)
+            .subscribeBy(
+                onNext = { positionMs ->
+                    playbackPositionMs = positionMs
+                },
+            )
+            .apply {
+                disposables.add(this)
+            }
+    }
+
+    private fun mergeListData(
+        upNextState: UpNextQueue.State,
+        playbackState: PlaybackState,
+        skipBackwardInSecs: Int,
+        skipForwardInSecs: Int,
+        upNextExpanded: Boolean,
+        chaptersExpanded: Boolean,
+        adjustRemainingTimeDuration: Boolean,
+        artworkConfiguration: ArtworkConfiguration,
+        sleepTimerState: SleepTimerState,
+    ): ListData {
         val podcast: Podcast? = (upNextState as? UpNextQueue.State.Loaded)?.podcast
         val episode = (upNextState as? UpNextQueue.State.Loaded)?.episode
 
         this.episode = episode
         this.podcast = podcast
 
-        val effects = if (podcast?.overrideGlobalEffects == true) podcast.playbackEffects else globalPlaybackEffects
-
-        val embeddedPath = playbackState.embeddedArtworkPath
-        val embeddedArtwork: Artwork = if (embeddedPath != null) {
-            Artwork.Path(embeddedPath)
-        } else if (episode is UserEpisode) {
-            val artworkUrl = episode.getUrlForArtwork(themeIsDark = true)
-            if (artworkUrl.startsWith("/")) Artwork.Path(artworkUrl) else Artwork.Url(artworkUrl)
-        } else Artwork.None
+        val effects = PlaybackEffects().apply {
+            playbackSpeed = playbackState.playbackSpeed
+            trimMode = playbackState.trimMode
+            isVolumeBoosted = playbackState.isVolumeBoosted
+        }
 
         val podcastHeader: PlayerHeader
         if (episode == null) {
             podcastHeader = PlayerHeader()
         } else {
-            isSleepRunning.postValue(playbackState.isSleepTimerRunning)
+            isSleepRunning.postValue(sleepTimerState.isSleepTimerRunning)
             val playerBackground = theme.playerBackgroundColor(podcast)
             val iconTintColor = theme.playerHighlightColor(podcast)
 
@@ -317,42 +370,37 @@ class PlayerViewModel @Inject constructor(
                 durationMs = playbackState.durationMs,
                 isPlaying = playbackState.isPlaying,
                 isPrepared = playbackState.isPrepared,
-                isVideo = episode.isVideo,
-                isStarred = (episode is Episode && episode.isStarred),
+                episode = episode,
                 isPlaybackRemote = playbackManager.isPlaybackRemote(),
                 chapters = playbackState.chapters,
                 backgroundColor = playerBackground,
                 iconTintColor = iconTintColor,
-                podcastUuid = podcast?.uuid,
-                episodeUuid = episode.uuid,
-                episodeTitle = episode.title,
                 podcastTitle = if (playbackState.chapters.isEmpty) podcast?.title else null,
                 skipBackwardInSecs = skipBackwardInSecs,
                 skipForwardInSecs = skipForwardInSecs,
-                isSleepRunning = playbackState.isSleepTimerRunning,
+                isSleepRunning = sleepTimerState.isSleepTimerRunning,
                 isEffectsOn = !effects.usingDefaultValues,
+                playbackEffects = effects,
+                adjustRemainingTimeDuration = adjustRemainingTimeDuration,
                 isBuffering = playbackState.isBuffering,
-                downloadStatus = episode.episodeStatus,
                 bufferedUpToMs = playbackState.bufferedMs,
-                embeddedArtwork = embeddedArtwork,
-                isUserEpisode = episode is UserEpisode,
-                theme = theme.activeTheme
+                theme = theme.activeTheme,
+                useEpisodeArtwork = artworkConfiguration.useEpisodeArtwork,
             )
         }
-        // copy the chapter so the diff can see the differences
-        val chapters = playbackState.chapters.getListWithState(playbackState.positionMs).map { it.copy() }
-        val currentChapter = playbackState.chapters.getChapter(playbackState.positionMs)
+        val chapters = playbackState.chapters
+        val currentChapter = playbackState.chapters.getChapter(playbackState.positionMs.milliseconds)
 
         var episodeCount = 0
         var totalTime = 0.0
-        var upNextEpisodes = emptyList<Playable>()
+        var upNextEpisodes = emptyList<BaseEpisode>()
         if (upNextState is UpNextQueue.State.Loaded) {
             upNextEpisodes = upNextState.queue
             episodeCount = upNextState.queue.size
-            for (playable in upNextState.queue) {
-                totalTime += playable.duration
-                if (playable.isInProgress) {
-                    totalTime -= playable.playedUpTo
+            for (upNextEpisode in upNextState.queue) {
+                totalTime += upNextEpisode.duration
+                if (upNextEpisode.isInProgress) {
+                    totalTime -= upNextEpisode.playedUpTo
                 }
             }
         }
@@ -365,28 +413,62 @@ class PlayerViewModel @Inject constructor(
             currentChapter = currentChapter,
             upNextExpanded = upNextExpanded,
             upNextEpisodes = upNextEpisodes,
-            upNextSummary = upNextFooter
+            upNextSummary = upNextFooter,
         )
+    }
+
+    fun onPlayPauseClicked() {
+        if (playbackManager.isPlaying()) {
+            LogBuffer.i(LogBuffer.TAG_PLAYBACK, "Pause clicked in player")
+            playbackManager.pause(sourceView = source)
+        } else {
+            if (playbackManager.shouldWarnAboutPlayback(playbackManager.upNextQueue.currentEpisode?.uuid)) {
+                viewModelScope.launch(ioDispatcher) {
+                    // show the stream warning if the episode isn't downloaded
+                    playbackManager.getCurrentEpisode()?.let { episode ->
+                        withContext(Dispatchers.Main) {
+                            if (episode.isDownloaded) {
+                                play()
+                                _snackbarMessages.emit(SnackbarMessage.ShowBatteryWarningIfAppropriate)
+                            } else {
+                                _navigationState.emit(NavigationState.ShowStreamingWarningDialog(episode))
+                            }
+                        }
+                    }
+                }
+            } else {
+                play()
+                viewModelScope.launch {
+                    _snackbarMessages.emit(SnackbarMessage.ShowBatteryWarningIfAppropriate)
+                }
+            }
+        }
     }
 
     fun play() {
         LogBuffer.i(LogBuffer.TAG_PLAYBACK, "Play clicked in player")
-        playbackManager.playQueue(playbackSource = source)
+        playbackManager.playQueue(sourceView = source)
     }
 
-    fun playEpisode(uuid: String, playbackSource: AnalyticsSource = AnalyticsSource.UNKNOWN) {
+    fun playEpisode(uuid: String, sourceView: SourceView = SourceView.UNKNOWN) {
         launch {
-            val episode = episodeManager.findPlayableByUuid(uuid) ?: return@launch
-            playbackManager.playNow(episode = episode, playbackSource = playbackSource)
+            val episode = episodeManager.findEpisodeByUuid(uuid) ?: return@launch
+            playbackManager.playNow(episode = episode, sourceView = sourceView)
         }
     }
 
-    fun skipBackward() {
-        playbackManager.skipBackward(playbackSource = source)
+    fun onSkipBackwardClick() {
+        playbackManager.skipBackward(sourceView = source, jumpAmountSeconds = settings.skipBackInSecs.value)
     }
 
-    fun skipForward() {
-        playbackManager.skipForward(playbackSource = source)
+    fun onSkipForwardClick() {
+        playbackManager.skipForward(sourceView = source, jumpAmountSeconds = settings.skipForwardInSecs.value)
+    }
+
+    fun onSkipForwardLongClick() {
+        viewModelScope.launch {
+            _navigationState.emit(NavigationState.ShowSkipForwardLongPressOptionsDialog)
+        }
     }
 
     fun onMarkAsPlayedClick() {
@@ -400,65 +482,54 @@ class PlayerViewModel @Inject constructor(
     }
 
     fun onNextEpisodeClick() {
-        playbackManager.playNextInQueue(playbackSource = source)
+        playbackManager.playNextInQueue(sourceView = source)
     }
 
-    private fun markAsPlayedConfirmed(episode: Playable) {
+    fun markAsPlayedConfirmed(episode: BaseEpisode, shouldShuffleUpNext: Boolean = false) {
         launch {
-            episodeManager.markAsPlayed(episode, playbackManager, podcastManager)
+            episodeManager.markAsPlayedBlocking(episode, playbackManager, podcastManager, shouldShuffleUpNext)
             episodeAnalytics.trackEvent(AnalyticsEvent.EPISODE_MARKED_AS_PLAYED, source, episode.uuid)
         }
     }
 
-    fun markCurrentlyPlayingAsPlayed(context: Context): ConfirmationDialog? {
-        val episode = playbackManager.upNextQueue.currentEpisode ?: return null
-        return ConfirmationDialog()
-            .setForceDarkTheme(true)
-            .setSummary(context.getString(LR.string.player_mark_as_played))
-            .setIconId(R.drawable.ic_markasplayed)
-            .setButtonType(ConfirmationDialog.ButtonType.Danger(context.getString(LR.string.player_mark_as_played_button)))
-            .setOnConfirm { markAsPlayedConfirmed(episode) }
-    }
-
-    private fun archiveConfirmed(episode: Episode) {
+    fun archiveConfirmed(episode: PodcastEpisode) {
         launch {
-            episodeManager.archive(episode, playbackManager, true)
+            episodeManager.archiveBlocking(episode, playbackManager, sync = true, shouldShuffleUpNext = settings.upNextShuffle.value)
             episodeAnalytics.trackEvent(AnalyticsEvent.EPISODE_ARCHIVED, source, episode.uuid)
         }
     }
 
-    fun archiveCurrentlyPlaying(resources: Resources): ConfirmationDialog? {
-        val episode = playbackManager.upNextQueue.currentEpisode ?: return null
-        if (episode is Episode) {
-            return ConfirmationDialog()
-                .setForceDarkTheme(true)
-                .setSummary(resources.getString(LR.string.player_archive_summary))
-                .setIconId(IR.drawable.ic_archive)
-                .setButtonType(ConfirmationDialog.ButtonType.Danger(resources.getString(LR.string.player_archive_title)))
-                .setOnConfirm { archiveConfirmed(episode) }
-        } else if (episode is UserEpisode) {
-            val deleteState = CloudDeleteHelper.getDeleteState(episode)
-            val deleteFunction: (UserEpisode, DeleteState) -> Unit = { ep, delState -> CloudDeleteHelper.deleteEpisode(ep, delState, playbackManager, episodeManager, userEpisodeManager) }
-            return CloudDeleteHelper.getDeleteDialog(episode, deleteState, deleteFunction, resources)
+    fun buildBookmarkArguments(onSuccess: (BookmarkArguments) -> Unit) {
+        val episode = episode ?: return
+        val timeSecs = playbackPositionMs / 1000
+        launch {
+            val bookmark = bookmarkManager.findByEpisodeTime(episode, timeSecs)
+            val podcast = podcast
+            val backgroundColor = if (podcast == null) 0xFF000000.toInt() else theme.playerBackgroundColor(podcast)
+            val tintColor = if (podcast == null) 0xFFFFFFFF.toInt() else theme.playerHighlightColor(podcast)
+            val arguments = BookmarkArguments(
+                bookmarkUuid = bookmark?.uuid,
+                episodeUuid = episode.uuid,
+                timeSecs = timeSecs,
+                backgroundColor = backgroundColor,
+                tintColor = tintColor,
+            )
+            onSuccess(arguments)
         }
-
-        return null
     }
 
-    fun downloadCurrentlyPlaying() {
+    fun handleDownloadClickFromPlaybackActions(onDeleteStart: () -> Unit, onDownloadStart: () -> Unit) {
         val episode = playbackManager.upNextQueue.currentEpisode ?: return
+
         if (episode.episodeStatus != EpisodeStatusEnum.NOT_DOWNLOADED) {
+            onDeleteStart.invoke()
             launch {
                 episodeManager.deleteEpisodeFile(episode, playbackManager, disableAutoDownload = false, removeFromUpNext = episode.episodeStatus == EpisodeStatusEnum.DOWNLOADED)
-                episodeAnalytics.trackEvent(
-                    event = AnalyticsEvent.EPISODE_DOWNLOAD_DELETED,
-                    source = source,
-                    uuid = episode.uuid,
-                )
             }
         } else {
+            onDownloadStart.invoke()
             launch {
-                DownloadHelper.manuallyDownloadEpisodeNow(episode, "Player shelf", downloadManager, episodeManager)
+                DownloadHelper.manuallyDownloadEpisodeNow(episode, "Player shelf", downloadManager, episodeManager, source = source)
             }
         }
     }
@@ -472,79 +543,142 @@ class PlayerViewModel @Inject constructor(
         disposables.clear()
     }
 
-    fun removeFromUpNext(episode: Playable) {
-        playbackManager.removeEpisode(episodeToRemove = episode, source = source)
+    private fun calcCustomTimeText(): String {
+        val hours = sleepCustomTimeInMinutes / 60
+        val minutes = sleepCustomTimeInMinutes % 60
+
+        return if (hours == 1 && minutes == 0) {
+            context.resources.getString(LR.string.hours_singular)
+        } else if (hours == 1 && minutes > 0) {
+            context.resources.getString(LR.string.hour_and_minutes, minutes)
+        } else if (hours > 1 && minutes == 0) {
+            context.resources.getString(LR.string.hours_plural, hours)
+        } else if (hours > 0) {
+            context.resources.getString(LR.string.hours_and_minutes, hours, minutes)
+        } else if (hours == 0 && minutes == 1) {
+            context.resources.getString(LR.string.minutes_singular)
+        } else {
+            context.resources.getString(LR.string.minutes_plural, sleepCustomTimeInMinutes)
+        }
     }
 
-    private fun calcCustomTimeText(): String {
-        return context.resources.getString(LR.string.minutes_plural, sleepCustomTimeMins)
+    private fun calcEndOfEpisodeText(): String {
+        return if (getSleepEndOfEpisodes() == 1) {
+            context.resources.getString(LR.string.player_sleep_timer_in_episode)
+        } else {
+            context.resources.getString(LR.string.player_sleep_timer_in_episode_plural, getSleepEndOfEpisodes())
+        }
+    }
+
+    private fun calcEndOfChapterText(): String {
+        return if (getSleepEndOfChapters() == 1) {
+            context.resources.getString(LR.string.player_sleep_timer_in_chapter)
+        } else {
+            context.resources.getString(LR.string.player_sleep_timer_in_chapter_plural, getSleepEndOfChapters())
+        }
+    }
+
+    private fun calcSleepingInEpisodesText(): String {
+        return if (getSleepEndOfEpisodes() == 1) {
+            context.resources.getString(LR.string.player_sleep_in_one_episode)
+        } else {
+            context.resources.getString(LR.string.player_sleep_in_episodes, getSleepEndOfEpisodes())
+        }
+    }
+
+    private fun calcSleepingInChaptersText(): String {
+        return if (getSleepEndOfChapters() == 1) {
+            context.resources.getString(LR.string.player_sleep_in_one_chapter)
+        } else {
+            context.resources.getString(LR.string.player_sleep_in_chapters, getSleepEndOfChapters())
+        }
     }
 
     fun updateSleepTimer() {
-        val timeLeft = sleepTimer.timeLeftInSecs()
-        if ((sleepTimer.isRunning && timeLeft != null && timeLeft.toInt() > 0) || playbackManager.sleepAfterEpisode) {
-            isSleepAtEndOfEpisode.postValue(playbackManager.sleepAfterEpisode)
-            sleepTimeLeftText.postValue(if (timeLeft != null && timeLeft > 0) Util.formattedSeconds(timeLeft.toDouble()) else "")
+        val timeLeft = timeLeftInSeconds()
+        if ((sleepTimer.state.isSleepTimerRunning && timeLeft > 0) || playbackManager.isSleepAfterEpisodeEnabled()) {
+            isSleepAtEndOfEpisodeOrChapter.postValue(playbackManager.isSleepAfterEpisodeEnabled())
+            sleepTimeLeftText.postValue(if (timeLeft > 0) Util.formattedSeconds(timeLeft.toDouble()) else "")
+            setSleepEndOfEpisodes(sleepTimer.state.numberOfEpisodesLeft, shouldCallUpdateTimer = false)
+            sleepingInText.postValue(calcSleepingInEpisodesText())
+        } else if (playbackManager.isSleepAfterChapterEnabled()) {
+            isSleepAtEndOfEpisodeOrChapter.postValue(playbackManager.isSleepAfterChapterEnabled())
+            setSleepEndOfChapters(sleepTimer.state.numberOfChaptersLeft, shouldCallUpdateTimer = false)
+            sleepingInText.postValue(calcSleepingInChaptersText())
         } else {
-            isSleepAtEndOfEpisode.postValue(false)
-            playbackManager.updateSleepTimerStatus(false)
+            isSleepAtEndOfEpisodeOrChapter.postValue(false)
+            sleepTimer.updateSleepTimerStatus(false)
         }
     }
 
-    fun timeLeftInSeconds(): Int? {
-        return sleepTimer.timeLeftInSecs()
+    fun timeLeftInSeconds(): Int {
+        return (sleepTimer.state.timeLeft.inWholeMilliseconds / DateUtils.SECOND_IN_MILLIS).toInt()
     }
 
     fun sleepTimerAfter(mins: Int) {
-        sleepTimer.sleepAfter(mins = mins) {
-            playbackManager.updateSleepTimerStatus(running = true, sleepAfterEpisode = false)
-        }
+        sleepTimer.sleepAfter(mins.toDuration(DurationUnit.MINUTES))
+        LogBuffer.i(SleepTimer.TAG, "Sleep after $mins minutes configured")
     }
 
-    fun sleepTimerAfterEpisode() {
-        playbackManager.updateSleepTimerStatus(running = true, sleepAfterEpisode = true)
+    fun sleepTimerAfterEpisode(episodes: Int = 1) {
+        LogBuffer.i(SleepTimer.TAG, "Sleep after $episodes episodes configured")
+        settings.setlastSleepEndOfEpisodes(episodes)
         sleepTimer.cancelTimer()
+        sleepTimer.updateSleepTimerStatus(sleepTimeRunning = true, sleepAfterEpisodes = episodes)
+    }
+
+    fun sleepTimerAfterChapter(chapters: Int = 1) {
+        LogBuffer.i(SleepTimer.TAG, "Sleep after $chapters chapters configured")
+        settings.setlastSleepEndOfChapters(chapters)
+        sleepTimer.cancelTimer()
+        sleepTimer.updateSleepTimerStatus(sleepTimeRunning = true, sleepAfterChapters = chapters)
     }
 
     fun cancelSleepTimer() {
-        playbackManager.updateSleepTimerStatus(running = false)
+        LogBuffer.i(SleepTimer.TAG, "Cancelled sleep timer")
+        sleepTimer.updateSleepTimerStatus(sleepTimeRunning = false)
         sleepTimer.cancelTimer()
     }
 
     fun sleepTimerAddExtraMins(mins: Int) {
-        sleepTimer.addExtraTime(mins)
+        sleepTimer.addExtraTime(mins.toDuration(DurationUnit.MINUTES))
         updateSleepTimer()
     }
 
-    fun starToggle() {
-        playbackManager.upNextQueue.currentEpisode?.let {
-            if (it is Episode) {
-                episodeManager.toggleStarEpisodeAsync(episode = it)
-                val event = if (it.isStarred) AnalyticsEvent.EPISODE_UNSTARRED else AnalyticsEvent.EPISODE_STARRED
-                episodeAnalytics.trackEvent(event, source, it.uuid)
-            }
-        }
-    }
-
-    fun changeUpNextEpisodes(episodes: List<Playable>) {
+    fun changeUpNextEpisodes(episodes: List<BaseEpisode>) {
         playbackManager.changeUpNext(episodes)
     }
 
     fun saveEffects(effects: PlaybackEffects, podcast: Podcast) {
         launch {
             if (podcast.overrideGlobalEffects) {
-                podcastManager.updateEffects(podcast, effects)
+                podcastManager.updateEffectsBlocking(podcast, effects)
             } else {
-                effects.saveToGlobalSettings(settings)
+                settings.globalPlaybackEffects.set(effects, updateModifiedAt = true)
             }
             playbackManager.updatePlayerEffects(effects)
         }
     }
 
+    fun onEffectsSettingsSegmentedTabSelected(podcast: Podcast, selectedTab: PlaybackEffectsSettingsTab) {
+        val currentEpisode = playbackManager.getCurrentEpisode()
+        val isCurrentPodcast = currentEpisode?.podcastOrSubstituteUuid == podcast.uuid
+        if (!isCurrentPodcast) return
+        viewModelScope.launch(ioDispatcher) {
+            val override = selectedTab == PlaybackEffectsSettingsTab.ThisPodcast
+            podcastManager.updateOverrideGlobalEffectsBlocking(podcast, override)
+
+            val effects = if (override) podcast.playbackEffects else settings.globalPlaybackEffects.value
+            podcast.overrideGlobalEffects = override
+            saveEffects(effects, podcast)
+        }
+        trackPlaybackEffectsEvent(AnalyticsEvent.PLAYBACK_EFFECT_SETTINGS_CHANGED)
+    }
+
     fun clearPodcastEffects(podcast: Podcast) {
         launch {
-            podcastManager.updateOverrideGlobalEffects(podcast, false)
-            playbackManager.updatePlayerEffects(settings.getGlobalPlaybackEffects())
+            podcastManager.updateOverrideGlobalEffectsBlocking(podcast, false)
+            playbackManager.updatePlayerEffects(settings.globalPlaybackEffects.value)
         }
     }
 
@@ -554,28 +688,88 @@ class PlayerViewModel @Inject constructor(
             removeNowPlaying = false,
             playbackManager = playbackManager,
             analyticsTracker = analyticsTracker,
-            context = context
+            context = context,
         )
-        dialog.setForceDarkTheme(true)
+        val forceDarkTheme = settings.useDarkUpNextTheme.value && upNextSource != UpNextSource.UP_NEXT_TAB
+        dialog.setForceDarkTheme(forceDarkTheme)
         return dialog
     }
 
-    fun nextChapter() {
-        playbackManager.skipToNextChapter()
-    }
-
-    fun previousChapter() {
-        playbackManager.skipToPreviousChapter()
-    }
-
-    fun onChapterClick(chapter: Chapter) {
-        launch {
-            val listData = listDataLive.value
-            if (listData?.isSameChapter(chapter) == true) {
-                _showPlayerFlow.emit(Unit)
-            } else {
-                playbackManager.skipToChapter(chapter)
-            }
+    fun onChapterUrlClick(chapterUrl: HttpUrl) {
+        viewModelScope.launch {
+            _navigationState.emit(NavigationState.OpenChapterUrl(chapterUrl.toString()))
         }
+    }
+
+    fun onNextChapterClick() {
+        analyticsTracker.track(AnalyticsEvent.PLAYER_NEXT_CHAPTER_TAPPED)
+        playbackManager.skipToNextSelectedOrLastChapter()
+    }
+
+    fun onPreviousChapterClick() {
+        analyticsTracker.track(AnalyticsEvent.PLAYER_PREVIOUS_CHAPTER_TAPPED)
+        playbackManager.skipToPreviousSelectedOrLastChapter()
+    }
+
+    fun onChapterTitleClick(chapter: Chapter) {
+        viewModelScope.launch {
+            _navigationState.emit(NavigationState.OpenChapterAt(chapter))
+        }
+    }
+
+    fun onPodcastTitleClick(episodeUuid: String, podcastUuid: String?) {
+        if (podcastUuid == null) return
+        analyticsTracker.track(
+            AnalyticsEvent.EPISODE_DETAIL_PODCAST_NAME_TAPPED,
+            mapOf(
+                ShelfViewModel.Companion.AnalyticsProp.Key.EPISODE_UUID to episodeUuid,
+                ShelfViewModel.Companion.AnalyticsProp.Key.SOURCE to EpisodeViewSource.NOW_PLAYING.value,
+            ),
+        )
+        viewModelScope.launch {
+            _navigationState.emit(NavigationState.OpenPodcastPage(podcastUuid, source))
+        }
+    }
+
+    fun trackPlaybackEffectsEvent(
+        event: AnalyticsEvent,
+        properties: Map<String, Any> = emptyMap(),
+    ) {
+        playbackManager.trackPlaybackEffectsEvent(
+            event = event,
+            props = buildMap {
+                putAll(properties)
+                if (FeatureFlag.isEnabled(Feature.CUSTOM_PLAYBACK_SETTINGS)) {
+                    val settings = if (effectsLive.value?.podcast?.overrideGlobalEffects == true) {
+                        PlaybackEffectsSettingsTab.ThisPodcast.analyticsValue
+                    } else {
+                        PlaybackEffectsSettingsTab.AllPodcasts.analyticsValue
+                    }
+                    put(AnalyticsProp.SETTINGS, settings)
+                }
+            },
+            sourceView = SourceView.PLAYER_PLAYBACK_EFFECTS,
+        )
+    }
+
+    sealed interface NavigationState {
+        data class ShowStreamingWarningDialog(val episode: BaseEpisode) : NavigationState
+        data object ShowSkipForwardLongPressOptionsDialog : NavigationState
+        data class OpenChapterAt(val chapter: Chapter) : NavigationState
+        data class OpenPodcastPage(val podcastUuid: String, val source: SourceView) : NavigationState
+        data class OpenChapterUrl(val chapterUrl: String) : NavigationState
+    }
+
+    sealed interface SnackbarMessage {
+        data object ShowBatteryWarningIfAppropriate : SnackbarMessage
+    }
+
+    private object AnalyticsProp {
+        const val SETTINGS = "settings"
+    }
+
+    enum class PlaybackEffectsSettingsTab(@StringRes val labelResId: Int, val analyticsValue: String) {
+        AllPodcasts(LR.string.podcasts_all, "global"),
+        ThisPodcast(LR.string.podcast_this, "local"),
     }
 }

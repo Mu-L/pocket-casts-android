@@ -1,10 +1,10 @@
 package au.com.shiftyjelly.pocketcasts.podcasts.viewmodel
 
 import androidx.lifecycle.LiveData
-import androidx.lifecycle.LiveDataReactiveStreams
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.toLiveData
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.models.entity.Folder
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
 import au.com.shiftyjelly.pocketcasts.models.to.FolderItem
@@ -12,7 +12,7 @@ import au.com.shiftyjelly.pocketcasts.models.to.RefreshState
 import au.com.shiftyjelly.pocketcasts.models.to.SignInState
 import au.com.shiftyjelly.pocketcasts.models.type.PodcastsSortType
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
-import au.com.shiftyjelly.pocketcasts.preferences.Settings.PodcastGridLayoutType
+import au.com.shiftyjelly.pocketcasts.preferences.model.BadgeType
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.FolderManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
@@ -22,15 +22,17 @@ import dagger.hilt.android.lifecycle.HiltViewModel
 import io.reactivex.BackpressureStrategy
 import io.reactivex.Flowable
 import io.reactivex.Flowable.combineLatest
-import io.reactivex.rxkotlin.Observables
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import timber.log.Timber
 import java.util.Collections
 import java.util.Optional
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.take
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.rx2.asObservable
+import timber.log.Timber
 
 @HiltViewModel
 class PodcastsViewModel
@@ -39,8 +41,8 @@ class PodcastsViewModel
     private val episodeManager: EpisodeManager,
     private val folderManager: FolderManager,
     private val settings: Settings,
-    private val analyticsTracker: AnalyticsTrackerWrapper,
-    userManager: UserManager
+    private val analyticsTracker: AnalyticsTracker,
+    userManager: UserManager,
 ) : ViewModel(), CoroutineScope {
     var isFragmentChangingConfigurations: Boolean = false
     override val coroutineContext: CoroutineContext
@@ -51,86 +53,86 @@ class PodcastsViewModel
     data class FolderState(
         val folder: Folder?,
         val items: List<FolderItem>,
-        val isSignedInAsPlus: Boolean
+        val isSignedInAsPlusOrPatron: Boolean,
     )
 
-    val signInState: LiveData<SignInState> = LiveDataReactiveStreams.fromPublisher(userManager.getSignInState())
+    val signInState: LiveData<SignInState> = userManager.getSignInState().toLiveData()
 
-    val folderState: LiveData<FolderState> = LiveDataReactiveStreams.fromPublisher(
-        combineLatest(
-            // monitor all subscribed podcasts, get the podcast in 'Episode release date' as the rest can be done in memory
-            podcastManager.observePodcastsOrderByLatestEpisode(),
-            // monitor all the folders
-            folderManager.observeFolders()
-                .switchMap { folders ->
-                    if (folders.isEmpty()) {
-                        Flowable.just(emptyList())
-                    } else {
-                        // monitor the folder podcasts
-                        val observeFolderPodcasts = folders.map { folder ->
-                            podcastManager
-                                .observePodcastsInFolderOrderByUserChoice(folder)
-                                .map { podcasts ->
-                                    FolderItem.Folder(
-                                        folder = folder,
-                                        podcasts = podcasts
-                                    )
-                                }
-                        }
-                        Flowable.zip(observeFolderPodcasts) { results ->
-                            results.toList().filterIsInstance<FolderItem.Folder>()
-                        }
+    val folderState: LiveData<FolderState> = combineLatest(
+        // monitor all subscribed podcasts, get the podcast in 'Episode release date' as the rest can be done in memory
+        podcastManager.podcastsOrderByLatestEpisodeRxFlowable(),
+        // monitor all the folders
+        folderManager.observeFolders()
+            .switchMap { folders ->
+                if (folders.isEmpty()) {
+                    Flowable.just(emptyList())
+                } else {
+                    // monitor the folder podcasts
+                    val observeFolderPodcasts = folders.map { folder ->
+                        podcastManager
+                            .podcastsInFolderOrderByUserChoiceRxFlowable(folder)
+                            .map { podcasts ->
+                                FolderItem.Folder(
+                                    folder = folder,
+                                    podcasts = podcasts,
+                                )
+                            }
                     }
-                },
-            // monitor the folder uuid
-            folderUuidObservable.toFlowable(BackpressureStrategy.LATEST),
-            // monitor the home folder sort order
-            settings.podcastSortTypeObservable.toFlowable(BackpressureStrategy.LATEST),
-            // show folders for Plus users
-            userManager.getSignInState()
-        ) { podcasts, folders, folderUuidOptional, podcastSortOrder, signInState ->
-            val folderUuid = folderUuidOptional.orElse(null)
-            if (!signInState.isSignedInAsPlus) {
+                    Flowable.zip(observeFolderPodcasts) { results ->
+                        results.toList().filterIsInstance<FolderItem.Folder>()
+                    }
+                }
+            },
+        // monitor the folder uuid
+        folderUuidObservable.toFlowable(BackpressureStrategy.LATEST),
+        // monitor the home folder sort order
+        settings.podcastsSortType.flow.asObservable(coroutineContext).toFlowable(BackpressureStrategy.LATEST),
+        // show folders for Plus users
+        userManager.getSignInState(),
+    ) { podcasts, folders, folderUuidOptional, podcastSortOrder, signInState ->
+        val folderUuid = folderUuidOptional.orElse(null)
+        if (!signInState.isSignedInAsPlusOrPatron) {
+            FolderState(
+                items = buildPodcastItems(podcasts, podcastSortOrder),
+                folder = null,
+                isSignedInAsPlusOrPatron = false,
+            )
+        } else if (folderUuid == null) {
+            FolderState(
+                items = buildHomeFolderItems(podcasts, folders, podcastSortOrder),
+                folder = null,
+                isSignedInAsPlusOrPatron = true,
+            )
+        } else {
+            val openFolder = folders.firstOrNull { it.uuid == folderUuid }
+            if (openFolder == null) {
                 FolderState(
-                    items = buildPodcastItems(podcasts, podcastSortOrder),
+                    items = emptyList(),
                     folder = null,
-                    isSignedInAsPlus = false
-                )
-            } else if (folderUuid == null) {
-                FolderState(
-                    items = buildHomeFolderItems(podcasts, folders, podcastSortOrder),
-                    folder = null,
-                    isSignedInAsPlus = true
+                    isSignedInAsPlusOrPatron = true,
                 )
             } else {
-                val openFolder = folders.firstOrNull { it.uuid == folderUuid }
-                if (openFolder == null) {
-                    FolderState(
-                        items = emptyList(),
-                        folder = null,
-                        isSignedInAsPlus = true
-                    )
-                } else {
-                    FolderState(
-                        items = openFolder.podcasts.map { FolderItem.Podcast(it) },
-                        folder = openFolder.folder,
-                        isSignedInAsPlus = true
-                    )
-                }
+                FolderState(
+                    items = openFolder.podcasts.map { FolderItem.Podcast(it) },
+                    folder = openFolder.folder,
+                    isSignedInAsPlusOrPatron = true,
+                )
             }
         }
-            .doOnNext { adapterState = it.items.toMutableList() }
-    )
+    }
+        .doOnNext { adapterState = it.items.toMutableList() }
+        .toLiveData()
 
     val folder: Folder?
         get() = folderState.value?.folder
 
     private fun buildHomeFolderItems(podcasts: List<Podcast>, folders: List<FolderItem>, podcastSortType: PodcastsSortType): List<FolderItem> {
         if (podcastSortType == PodcastsSortType.EPISODE_DATE_NEWEST_TO_OLDEST) {
+            val folderUuids = folders.mapTo(mutableSetOf()) { it.uuid }
             val items = mutableListOf<FolderItem>()
-            val uuidToFolder = folders.associateBy({ it.uuid }, { it }).toMutableMap()
+            val uuidToFolder = folders.associateByTo(mutableMapOf(), FolderItem::uuid)
             for (podcast in podcasts) {
-                if (podcast.folderUuid == null) {
+                if (podcast.folderUuid == null || !folderUuids.contains(podcast.folderUuid)) {
                     items.add(FolderItem.Podcast(podcast))
                 } else {
                     // add the folder in the position of the podcast with the latest release date
@@ -167,22 +169,27 @@ class PodcastsViewModel
     }
 
     val podcastUuidToBadge: LiveData<Map<String, Int>> =
-        LiveDataReactiveStreams.fromPublisher(
-            settings.podcastBadgeTypeObservable
-                .toFlowable(BackpressureStrategy.LATEST)
-                .switchMap { badgeType ->
-                    return@switchMap when (badgeType) {
-                        Settings.BadgeType.ALL_UNFINISHED -> episodeManager.getPodcastUuidToBadgeUnfinished()
-                        Settings.BadgeType.LATEST_EPISODE -> episodeManager.getPodcastUuidToBadgeLatest()
-                        else -> Flowable.just(emptyMap())
-                    }
+        settings.podcastBadgeType.flow
+            .asObservable(coroutineContext)
+            .toFlowable(BackpressureStrategy.LATEST)
+            .switchMap { badgeType ->
+                return@switchMap when (badgeType) {
+                    BadgeType.ALL_UNFINISHED -> episodeManager.getPodcastUuidToBadgeUnfinishedRxFlowable()
+                    BadgeType.LATEST_EPISODE -> episodeManager.getPodcastUuidToBadgeLatestRxFlowable()
+                    else -> Flowable.just(emptyMap())
                 }
-        )
+            }.toLiveData()
 
     // We only want the current badge type when loading for this observable or else it will rebind the adapter every time the badge changes. We use take(1) for this.
-    val layoutChangedLiveData = LiveDataReactiveStreams.fromPublisher(Observables.combineLatest(settings.podcastLayoutObservable, settings.podcastBadgeTypeObservable.take(1)).toFlowable(BackpressureStrategy.LATEST))
+    val layoutChangedLiveData = settings.podcastGridLayout.flow
+        .combine(settings.podcastBadgeType.flow.take(1), ::Pair)
+        .asObservable(coroutineContext)
+        .toFlowable(BackpressureStrategy.LATEST)
+        .toLiveData()
 
-    val refreshObservable: LiveData<RefreshState> = LiveDataReactiveStreams.fromPublisher(settings.refreshStateObservable.toFlowable(BackpressureStrategy.LATEST))
+    val refreshObservable: LiveData<RefreshState> = settings.refreshStateObservable
+        .toFlowable(BackpressureStrategy.LATEST)
+        .toLiveData()
 
     private var adapterState: MutableList<FolderItem> = mutableListOf()
 
@@ -220,7 +227,7 @@ class PodcastsViewModel
     fun refreshPodcasts() {
         analyticsTracker.track(
             AnalyticsEvent.PULLED_TO_REFRESH,
-            mapOf("source" to "podcasts_list")
+            mapOf("source" to "podcasts_list"),
         )
         podcastManager.refreshPodcasts("Pull down")
     }
@@ -238,7 +245,7 @@ class PodcastsViewModel
 
         val folder = folder
         if (folder == null) {
-            settings.setPodcastsSortType(sortType = PodcastsSortType.DRAG_DROP, sync = true)
+            settings.podcastsSortType.set(PodcastsSortType.DRAG_DROP, updateModifiedAt = true)
         } else {
             folderManager.updateSortType(folderUuid = folder.uuid, podcastsSortType = PodcastsSortType.DRAG_DROP)
         }
@@ -259,9 +266,9 @@ class PodcastsViewModel
             val properties = HashMap<String, Any>()
             properties[NUMBER_OF_FOLDERS_KEY] = folderManager.countFolders()
             properties[NUMBER_OF_PODCASTS_KEY] = podcastManager.countSubscribed()
-            properties[BADGE_TYPE_KEY] = settings.getPodcastBadgeType().analyticsValue
-            properties[LAYOUT_KEY] = PodcastGridLayoutType.fromLayoutId(settings.getPodcastsLayout()).analyticsValue
-            properties[SORT_ORDER_KEY] = settings.getPodcastsSortType().analyticsValue
+            properties[BADGE_TYPE_KEY] = settings.podcastBadgeType.value.analyticsValue
+            properties[LAYOUT_KEY] = settings.podcastGridLayout.value.analyticsValue
+            properties[SORT_ORDER_KEY] = settings.podcastsSortType.value.analyticsValue
             analyticsTracker.track(AnalyticsEvent.PODCASTS_LIST_SHOWN, properties)
         }
     }
@@ -269,7 +276,7 @@ class PodcastsViewModel
     fun trackFolderShown(folderUuid: String) {
         launch {
             val properties = HashMap<String, Any>()
-            properties[SORT_ORDER_KEY] = (folderManager.findByUuid(folderUuid)?.podcastsSortType ?: PodcastsSortType.DATE_ADDED_OLDEST_TO_NEWEST).analyticsValue
+            properties[SORT_ORDER_KEY] = (folderManager.findByUuid(folderUuid)?.podcastsSortType ?: PodcastsSortType.DATE_ADDED_NEWEST_TO_OLDEST).analyticsValue
             properties[NUMBER_OF_PODCASTS_KEY] = folderManager.findFolderPodcastsSorted(folderUuid).size
             analyticsTracker.track(AnalyticsEvent.FOLDER_SHOWN, properties)
         }

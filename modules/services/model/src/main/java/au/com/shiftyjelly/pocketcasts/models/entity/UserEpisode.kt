@@ -5,7 +5,6 @@ import androidx.room.Entity
 import androidx.room.Ignore
 import androidx.room.Index
 import androidx.room.PrimaryKey
-import au.com.shiftyjelly.pocketcasts.models.db.helper.UserEpisodePodcastSubstitute
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodePlayingStatus
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeStatusEnum
 import au.com.shiftyjelly.pocketcasts.models.type.UserEpisodeServerStatus
@@ -16,8 +15,8 @@ import java.util.Date
     tableName = "user_episodes",
     indices = [
         Index(name = "user_episode_last_download_attempt_date", value = arrayOf("last_download_attempt_date")),
-        Index(name = "user_episode_published_date", value = arrayOf("published_date"))
-    ]
+        Index(name = "user_episode_published_date", value = arrayOf("published_date")),
+    ],
 )
 data class UserEpisode(
     @PrimaryKey(autoGenerate = false) @ColumnInfo(name = "uuid") override var uuid: String,
@@ -46,14 +45,22 @@ data class UserEpisode(
     @ColumnInfo(name = "downloaded_error_details") override var downloadErrorDetails: String? = null,
     @ColumnInfo(name = "tint_color_index") var tintColorIndex: Int = 0,
     @ColumnInfo(name = "has_custom_image") var hasCustomImage: Boolean = false,
-    @ColumnInfo(name = "upload_task_id") var uploadTaskId: String? = null
-) : Playable, Serializable {
+    @ColumnInfo(name = "upload_task_id") var uploadTaskId: String? = null,
+    @ColumnInfo(name = "deselected_chapters") override var deselectedChapters: ChapterIndices = ChapterIndices(),
+    @ColumnInfo(name = "deselected_chapters_modified") override var deselectedChaptersModified: Date? = null,
+) : BaseEpisode, Serializable {
     // temporary variables
     @Ignore
     override var playing: Boolean = false
 
+    @Ignore
+    override var isStarred: Boolean = false
+
+    @Ignore
+    var hasBookmark: Boolean = false
+
     override fun displaySubtitle(podcast: Podcast?): String {
-        return UserEpisodePodcastSubstitute.substituteTitle
+        return Podcast.userPodcast.title
     }
 
     val isUploading: Boolean

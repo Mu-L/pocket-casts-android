@@ -2,17 +2,19 @@ package au.com.shiftyjelly.pocketcasts.podcasts.view.podcast
 
 import android.os.Bundle
 import android.view.View
-import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
 import androidx.core.os.bundleOf
+import androidx.core.view.updatePadding
 import androidx.fragment.app.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.Preference
 import androidx.preference.SwitchPreference
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import au.com.shiftyjelly.pocketcasts.analytics.FirebaseAnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.localization.extensions.getStringPluralSeconds
 import au.com.shiftyjelly.pocketcasts.models.entity.Playlist
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
@@ -20,17 +22,19 @@ import au.com.shiftyjelly.pocketcasts.models.type.EpisodeStatusEnum
 import au.com.shiftyjelly.pocketcasts.podcasts.R
 import au.com.shiftyjelly.pocketcasts.podcasts.viewmodel.PodcastSettingsViewModel
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
+import au.com.shiftyjelly.pocketcasts.preferences.model.AutoAddUpNextLimitBehaviour
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
 import au.com.shiftyjelly.pocketcasts.settings.AutoAddSettingsFragment
 import au.com.shiftyjelly.pocketcasts.ui.extensions.getThemeColor
 import au.com.shiftyjelly.pocketcasts.ui.extensions.getTintedDrawable
 import au.com.shiftyjelly.pocketcasts.ui.helper.FragmentHostListener
-import au.com.shiftyjelly.pocketcasts.ui.helper.StatusBarColor
+import au.com.shiftyjelly.pocketcasts.ui.helper.StatusBarIconColor
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 import au.com.shiftyjelly.pocketcasts.utils.combineLatest
 import au.com.shiftyjelly.pocketcasts.views.dialog.ConfirmationDialog
+import au.com.shiftyjelly.pocketcasts.views.extensions.includeStatusBarPadding
 import au.com.shiftyjelly.pocketcasts.views.extensions.setInputAsSeconds
-import au.com.shiftyjelly.pocketcasts.views.extensions.updateColors
+import au.com.shiftyjelly.pocketcasts.views.extensions.setup
 import au.com.shiftyjelly.pocketcasts.views.fragments.BasePreferenceFragment
 import au.com.shiftyjelly.pocketcasts.views.fragments.FilterSelectFragment
 import au.com.shiftyjelly.pocketcasts.views.helper.HasBackstack
@@ -38,23 +42,29 @@ import au.com.shiftyjelly.pocketcasts.views.helper.NavigationIcon.BackArrow
 import au.com.shiftyjelly.pocketcasts.views.helper.ToolbarColors
 import au.com.shiftyjelly.pocketcasts.views.helper.UiUtil
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
+import javax.inject.Inject
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import timber.log.Timber
-import javax.inject.Inject
-import kotlin.coroutines.CoroutineContext
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 import au.com.shiftyjelly.pocketcasts.settings.R as SR
 import au.com.shiftyjelly.pocketcasts.ui.R as UR
 
 @AndroidEntryPoint
-class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, FilterSelectFragment.Listener, HasBackstack {
-    @Inject lateinit var theme: Theme
-    @Inject lateinit var podcastManager: PodcastManager
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
+class PodcastSettingsFragment : BasePreferenceFragment(), FilterSelectFragment.Listener, HasBackstack {
+    @Inject
+    lateinit var theme: Theme
+
+    @Inject
+    lateinit var podcastManager: PodcastManager
+
+    @Inject
+    lateinit var analyticsTracker: AnalyticsTracker
+
+    @Inject
+    lateinit var settings: Settings
 
     private var preferenceFeedIssueDetected: Preference? = null
     private var preferenceNotifications: SwitchPreference? = null
@@ -72,9 +82,6 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
     private val viewModel: PodcastSettingsViewModel by viewModels()
     private var toolbar: Toolbar? = null
 
-    override val coroutineContext: CoroutineContext
-        get() = Dispatchers.Main
-
     val podcastUuid
         get() = arguments?.getString(ARG_PODCAST_UUID)!!
 
@@ -84,7 +91,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
         fun newInstance(podcastUuid: String): PodcastSettingsFragment {
             return PodcastSettingsFragment().apply {
                 arguments = bundleOf(
-                    ARG_PODCAST_UUID to podcastUuid
+                    ARG_PODCAST_UUID to podcastUuid,
                 )
             }
         }
@@ -129,17 +136,15 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
         view.setBackgroundColor(view.context.getThemeColor(UR.attr.primary_ui_01))
         view.isClickable = true
 
-        val toolbar = view.findViewById<Toolbar>(R.id.toolbar)
-        this.toolbar = toolbar
-        toolbar.title = getString(LR.string.podcast_settings)
-        (activity as AppCompatActivity).setSupportActionBar(toolbar)
+        toolbar = view.findViewById(R.id.toolbar)
+        toolbar?.includeStatusBarPadding()
 
         preferenceAddToUpNextOrder?.isVisible = false
 
         viewModel.podcast.observe(viewLifecycleOwner) { podcast ->
-            val context = toolbar.context
+            val context = context ?: return@observe
 
-            val colors = ToolbarColors.Podcast(podcast = podcast, theme = theme)
+            val colors = ToolbarColors.podcast(podcast = podcast, theme = theme)
 
             preferenceFeedIssueDetected?.icon = context.getTintedDrawable(IR.drawable.ic_alert_small, colors.iconColor)
             preferenceFeedIssueDetected?.isVisible = podcast.refreshAvailable
@@ -148,14 +153,19 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
             preferencePlaybackEffects?.icon = context.getTintedDrawable(effectsDrawableId, colors.iconColor)
             preferencePlaybackEffects?.summary = buildEffectsSummary(podcast)
 
-            toolbar.title = podcast.title
-
             updateTintColor(colors.iconColor)
-            toolbar.updateColors(toolbarColors = colors, navigationIcon = BackArrow)
-            theme.updateWindowStatusBar(
+            toolbar?.setup(
+                title = podcast.title,
+                navigationIcon = BackArrow,
+                toolbarColors = colors,
+                theme = theme,
+                activity = activity,
+                includeStatusBarPadding = false,
+            )
+
+            theme.updateWindowStatusBarIcons(
                 window = requireActivity().window,
-                statusBarColor = StatusBarColor.Custom(colors.backgroundColor, isWhiteIcons = theme.activeTheme.defaultLightIcons),
-                context = requireContext()
+                statusBarIconColor = StatusBarIconColor.Theme,
             )
 
             preferenceNotifications?.isChecked = podcast.isShowNotifications
@@ -189,11 +199,19 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
 
         viewModel.globalSettings.observe(viewLifecycleOwner) {
             val summary = when (it.second) {
-                Settings.AutoAddUpNextLimitBehaviour.ONLY_ADD_TO_TOP, null -> getString(LR.string.settings_auto_up_next_limit_reached_top_summary, it.first)
-                Settings.AutoAddUpNextLimitBehaviour.STOP_ADDING -> getString(LR.string.settings_auto_up_next_limit_reached_stop_summary, it.first)
+                AutoAddUpNextLimitBehaviour.ONLY_ADD_TO_TOP -> getString(LR.string.settings_auto_up_next_limit_reached_top_summary, it.first)
+                AutoAddUpNextLimitBehaviour.STOP_ADDING -> getString(LR.string.settings_auto_up_next_limit_reached_stop_summary, it.first)
             }
 
             preferenceAddToUpNextGlobal?.summary = getString(LR.string.podcast_settings_up_next_episode_limit, it.first) + "\n\n" + summary
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                settings.bottomInset.collect {
+                    view.updatePadding(bottom = it)
+                }
+            }
         }
 
         setupAddToUpNext()
@@ -216,7 +234,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
                 .setSummary(getString(LR.string.podcast_feed_issue_dialog_summary))
                 .setIconId(IR.drawable.ic_failedwarning)
                 .setOnConfirm {
-                    launch {
+                    lifecycleScope.launch {
                         analyticsTracker.track(AnalyticsEvent.PODCAST_SETTINGS_FEED_ERROR_UPDATE_TAPPED)
                         podcastManager.updateRefreshAvailable(podcastUuid = podcastUuid, refreshAvailable = false)
                         val success = podcastManager.refreshPodcastFeed(podcastUuid = podcastUuid)
@@ -225,9 +243,8 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
                                 AnalyticsEvent.PODCAST_SETTINGS_FEED_ERROR_FIX_SUCCEEDED
                             } else {
                                 AnalyticsEvent.PODCAST_SETTINGS_FEED_ERROR_FIX_FAILED
-                            }
+                            },
                         )
-                        FirebaseAnalyticsTracker.podcastFeedRefreshed()
                         showFeedUpdateQueued(success = success)
                     }
                 }
@@ -252,9 +269,9 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
         val dialog = ConfirmationDialog().setButtonType(
             ConfirmationDialog.ButtonType.Normal(
                 getString(
-                    LR.string.ok
-                )
-            )
+                    LR.string.ok,
+                ),
+            ),
         )
             .setTitle(getString(title))
             .setSummary(getString(summary))
@@ -271,8 +288,13 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
 
     private fun setupArchive() {
         preferenceAutoArchive?.setOnPreferenceClickListener {
-            viewModel.podcastUuid?.let { uuid ->
-                (activity as FragmentHostListener).addFragment(PodcastAutoArchiveFragment.newInstance(uuid))
+            viewModel.podcast.value?.let { podcast ->
+                (activity as FragmentHostListener).addFragment(
+                    PodcastAutoArchiveFragment.newInstance(
+                        podcast.uuid,
+                        ToolbarColors.podcast(podcast, theme),
+                    ),
+                )
             }
             true
         }
@@ -288,7 +310,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
                 val secs = stringValue.toInt()
                 analyticsTracker.track(
                     AnalyticsEvent.PODCAST_SETTINGS_SKIP_FIRST_CHANGED,
-                    mapOf("value" to secs)
+                    mapOf("value" to secs),
                 )
                 viewModel.updateStartFrom(secs)
             } catch (e: NumberFormatException) {
@@ -308,7 +330,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
                 val secs = stringValue.toInt()
                 analyticsTracker.track(
                     AnalyticsEvent.PODCAST_SETTINGS_SKIP_LAST_CHANGED,
-                    mapOf("value" to secs)
+                    mapOf("value" to secs),
                 )
                 viewModel.updateSkipLast(secs)
             } catch (e: java.lang.NumberFormatException) {
@@ -322,7 +344,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
         preferenceNotifications?.setOnPreferenceChangeListener { _, newValue ->
             analyticsTracker.track(
                 AnalyticsEvent.PODCAST_SETTINGS_NOTIFICATIONS_TOGGLED,
-                mapOf("enabled" to (newValue as Boolean))
+                mapOf("enabled" to (newValue as Boolean)),
             )
             viewModel.showNotifications(newValue)
             true
@@ -342,7 +364,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
         preferenceFilters?.setOnPreferenceClickListener {
             val fragment = FilterSelectFragment.newInstance(
                 source = FilterSelectFragment.Source.PODCAST_SETTINGS,
-                shouldFilterPlaylistsWithAllPodcasts = true
+                shouldFilterPlaylistsWithAllPodcasts = true,
             )
             childFragmentManager.beginTransaction()
                 .replace(UR.id.frameChildFragment, fragment)
@@ -354,9 +376,9 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
 
     private fun setupUnsubscribe() {
         preferenceUnsubscribe?.setOnPreferenceClickListener {
-            launch {
+            lifecycleScope.launch {
                 val resources = context?.resources ?: return@launch
-                val downloaded = withContext(Dispatchers.Default) { podcastManager.countEpisodesInPodcastWithStatus(podcastUuid, EpisodeStatusEnum.DOWNLOADED) }
+                val downloaded = withContext(Dispatchers.Default) { podcastManager.countEpisodesInPodcastWithStatusBlocking(podcastUuid, EpisodeStatusEnum.DOWNLOADED) }
                 val title = when (downloaded) {
                     0 -> resources.getString(LR.string.are_you_sure)
                     1 -> resources.getString(LR.string.podcast_unsubscribe_downloaded_file_singular)
@@ -365,9 +387,9 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
                 val dialog = ConfirmationDialog().setButtonType(
                     ConfirmationDialog.ButtonType.Danger(
                         resources.getString(
-                            LR.string.unsubscribe
-                        )
-                    )
+                            LR.string.unsubscribe,
+                        ),
+                    ),
                 )
                     .setTitle(title)
                     .setSummary(resources.getString(LR.string.podcast_unsubscribe_warning))
@@ -388,7 +410,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
             listOf(
                 getString(LR.string.podcast_effects_summary_speed, podcast.playbackSpeed.toString()),
                 getString(if (podcast.isSilenceRemoved) LR.string.podcast_effects_summary_trim_silence_on else LR.string.podcast_effects_summary_trim_silence_off),
-                getString(if (podcast.isVolumeBoosted) LR.string.podcast_effects_summary_volume_boost_on else LR.string.podcast_effects_summary_volume_boost_off)
+                getString(if (podcast.isVolumeBoosted) LR.string.podcast_effects_summary_volume_boost_on else LR.string.podcast_effects_summary_volume_boost_off),
             ).joinToString()
         } else {
             getString(LR.string.podcast_effects_summary_default)
@@ -397,7 +419,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
 
     private fun setupStatusBar() {
         activity?.let {
-            theme.updateWindowStatusBar(window = it.window, statusBarColor = StatusBarColor.Light, context = it)
+            theme.updateWindowStatusBarIcons(window = it.window, statusBarIconColor = StatusBarIconColor.Theme)
         }
     }
 
@@ -407,7 +429,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
             setOnPreferenceChangeListener { _, isOn ->
                 analyticsTracker.track(
                     AnalyticsEvent.PODCAST_SETTINGS_AUTO_ADD_UP_NEXT_TOGGLED,
-                    mapOf("enabled" to isOn as Boolean)
+                    mapOf("enabled" to isOn as Boolean),
                 )
                 viewModel.updateAutoAddToUpNext(isOn)
                 true
@@ -418,8 +440,8 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
             entries = arrayOf(
                 getString(LR.string.play_last),
                 getString(
-                    LR.string.play_next
-                )
+                    LR.string.play_next,
+                ),
             )
             entryValues = arrayOf("1", "2")
             setOnPreferenceChangeListener { _, newValue ->
@@ -434,7 +456,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
                     viewModel.updateAutoAddToUpNextOrder(value)
                     analyticsTracker.track(
                         AnalyticsEvent.PODCAST_SETTINGS_AUTO_ADD_UP_NEXT_POSITION_OPTION_CHANGED,
-                        mapOf("value" to value.analyticsValue)
+                        mapOf("value" to value.analyticsValue),
                     )
                 }
                 true
@@ -444,7 +466,7 @@ class PodcastSettingsFragment : BasePreferenceFragment(), CoroutineScope, Filter
         preferenceAutoDownload?.setOnPreferenceChangeListener { _, newValue ->
             analyticsTracker.track(
                 AnalyticsEvent.PODCAST_SETTINGS_AUTO_DOWNLOAD_TOGGLED,
-                mapOf("enabled" to newValue as Boolean)
+                mapOf("enabled" to newValue as Boolean),
             )
             viewModel.setAutoDownloadEpisodes(newValue)
             true

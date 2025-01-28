@@ -1,7 +1,7 @@
 package au.com.shiftyjelly.pocketcasts.taskerplugin.playplaylist
 
 import android.content.Context
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.localization.R
 import au.com.shiftyjelly.pocketcasts.taskerplugin.base.hilt.episodeManager
 import au.com.shiftyjelly.pocketcasts.taskerplugin.base.hilt.playbackManager
@@ -26,12 +26,12 @@ class ActionRunnerPlayPlaylist : TaskerPluginRunnerActionNoOutput<InputPlayPlayl
 
         playbackManager.upNextQueue.removeAll()
 
-        val playlist = playlistManager.findFirstByTitle(title) ?: return TaskerPluginResultError(ERROR_PLAYLIST_NOT_FOUND, context.getString(R.string.filter_x_not_found, title))
+        val playlist = playlistManager.findFirstByTitleBlocking(title) ?: return TaskerPluginResultError(ERROR_PLAYLIST_NOT_FOUND, context.getString(R.string.filter_x_not_found, title))
 
-        val episodes = playlistManager.findEpisodes(playlist, episodeManager, playbackManager)
+        val episodes = playlistManager.findEpisodesBlocking(playlist, episodeManager, playbackManager)
         if (episodes.isEmpty()) return TaskerPluginResultError(ERROR_PLAYLIST_NO_EPISODES, context.getString(R.string.no_episodes_in_filter_x, title))
 
-        playbackManager.playEpisodes(episodes, AnalyticsSource.TASKER)
+        playbackManager.playEpisodes(episodes, SourceView.TASKER)
         return TaskerPluginResultSucess()
     }
 }

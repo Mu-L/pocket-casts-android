@@ -3,42 +3,48 @@ package au.com.shiftyjelly.pocketcasts.filters
 import android.animation.LayoutTransition
 import android.content.Context
 import android.content.res.ColorStateList
-import android.os.Build
 import android.os.Bundle
 import android.os.Parcelable
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import androidx.annotation.ColorInt
+import androidx.core.os.BundleCompat
 import androidx.core.view.isVisible
+import androidx.core.view.updatePadding
 import androidx.fragment.app.viewModels
-import androidx.lifecycle.Observer
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.filters.databinding.FragmentFilterBinding
 import au.com.shiftyjelly.pocketcasts.localization.extensions.getStringPluralPodcasts
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
 import au.com.shiftyjelly.pocketcasts.models.entity.Playlist
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeViewSource
 import au.com.shiftyjelly.pocketcasts.podcasts.view.components.PlayButton
-import au.com.shiftyjelly.pocketcasts.podcasts.view.episode.EpisodeFragment
+import au.com.shiftyjelly.pocketcasts.podcasts.view.episode.EpisodeContainerFragment
 import au.com.shiftyjelly.pocketcasts.podcasts.view.podcast.EpisodeListAdapter
+import au.com.shiftyjelly.pocketcasts.podcasts.viewmodel.EpisodeListBookmarkViewModel
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
+import au.com.shiftyjelly.pocketcasts.preferences.model.ArtworkConfiguration.Element
+import au.com.shiftyjelly.pocketcasts.preferences.model.AutoPlaySource
+import au.com.shiftyjelly.pocketcasts.repositories.bookmark.BookmarkManager
 import au.com.shiftyjelly.pocketcasts.repositories.chromecast.CastManager
 import au.com.shiftyjelly.pocketcasts.repositories.download.DownloadManager
-import au.com.shiftyjelly.pocketcasts.repositories.images.PodcastImageLoader
+import au.com.shiftyjelly.pocketcasts.repositories.images.PocketCastsImageRequestFactory
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.playback.UpNextQueue
 import au.com.shiftyjelly.pocketcasts.ui.extensions.getColor
 import au.com.shiftyjelly.pocketcasts.ui.extensions.getStringForDuration
+import au.com.shiftyjelly.pocketcasts.ui.extensions.themed
 import au.com.shiftyjelly.pocketcasts.ui.helper.FragmentHostListener
-import au.com.shiftyjelly.pocketcasts.ui.helper.StatusBarColor
-import au.com.shiftyjelly.pocketcasts.ui.images.PodcastImageLoaderThemed
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 import au.com.shiftyjelly.pocketcasts.ui.theme.ThemeColor
 import au.com.shiftyjelly.pocketcasts.utils.extensions.dpToPx
@@ -48,11 +54,15 @@ import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragment
 import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragmentToolbar.ChromeCastButton.Shown
 import au.com.shiftyjelly.pocketcasts.views.helper.EpisodeItemTouchHelper
 import au.com.shiftyjelly.pocketcasts.views.helper.NavigationIcon.BackArrow
+import au.com.shiftyjelly.pocketcasts.views.helper.SwipeButtonLayoutFactory
+import au.com.shiftyjelly.pocketcasts.views.helper.SwipeButtonLayoutViewModel
 import au.com.shiftyjelly.pocketcasts.views.helper.ToolbarColors
+import au.com.shiftyjelly.pocketcasts.views.multiselect.MultiSelectEpisodesHelper
 import au.com.shiftyjelly.pocketcasts.views.multiselect.MultiSelectHelper
 import com.google.android.material.chip.Chip
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.launch
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
@@ -78,19 +88,51 @@ class FilterEpisodeListFragment : BaseFragment() {
     }
 
     private val viewModel by viewModels<FilterEpisodeListViewModel>()
+    private val episodeListBookmarkViewModel by viewModels<EpisodeListBookmarkViewModel>()
+    private val swipeButtonLayoutViewModel: SwipeButtonLayoutViewModel by viewModels()
 
     @Inject lateinit var downloadManager: DownloadManager
+
     @Inject lateinit var playbackManager: PlaybackManager
+
     @Inject lateinit var playButtonListener: PlayButton.OnClickListener
+
     @Inject lateinit var settings: Settings
+
     @Inject lateinit var castManager: CastManager
+
     @Inject lateinit var upNextQueue: UpNextQueue
-    @Inject lateinit var multiSelectHelper: MultiSelectHelper
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
 
-    private lateinit var imageLoader: PodcastImageLoader
+    @Inject lateinit var multiSelectHelper: MultiSelectEpisodesHelper
 
-    private lateinit var adapter: EpisodeListAdapter
+    @Inject lateinit var analyticsTracker: AnalyticsTracker
+
+    @Inject lateinit var bookmarkManager: BookmarkManager
+    private lateinit var imageRequestFactory: PocketCastsImageRequestFactory
+
+    private val adapter: EpisodeListAdapter by lazy {
+        EpisodeListAdapter(
+            bookmarkManager = bookmarkManager,
+            downloadManager = downloadManager,
+            playbackManager = playbackManager,
+            upNextQueue = upNextQueue,
+            settings = settings,
+            onRowClick = this::onRowClick,
+            playButtonListener = playButtonListener,
+            imageRequestFactory = imageRequestFactory,
+            multiSelectHelper = multiSelectHelper,
+            fragmentManager = childFragmentManager,
+            swipeButtonLayoutFactory = SwipeButtonLayoutFactory(
+                swipeButtonLayoutViewModel = swipeButtonLayoutViewModel,
+                onItemUpdated = this::lazyNotifyAdapterChanged,
+                defaultUpNextSwipeAction = { settings.upNextSwipe.value },
+                fragmentManager = parentFragmentManager,
+                swipeSource = EpisodeItemTouchHelper.SwipeSource.FILTERS,
+            ),
+            artworkContext = Element.Filters,
+        )
+    }
+
     private var showingFilterOptionsBeforeMultiSelect: Boolean = false
     private var multiSelectLoaded: Boolean = false
     private var listSavedState: Parcelable? = null
@@ -100,24 +142,25 @@ class FilterEpisodeListFragment : BaseFragment() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        listSavedState = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            savedInstanceState?.getParcelable(STATE_LAYOUT_MANAGER, Parcelable::class.java)
-        } else {
-            @Suppress("DEPRECATION")
-            savedInstanceState?.getParcelable(STATE_LAYOUT_MANAGER)
-        }
+        listSavedState = savedInstanceState?.let { BundleCompat.getParcelable(it, STATE_LAYOUT_MANAGER, Parcelable::class.java) }
         showingFilterOptionsBeforeModal = arguments?.getBoolean(ARG_FILTER_IS_NEW) ?: false
     }
 
     override fun onAttach(context: Context) {
         super.onAttach(context)
 
-        imageLoader = PodcastImageLoaderThemed(context).apply {
-            radiusPx = 4.dpToPx(context)
-        }.smallPlaceholder()
+        imageRequestFactory = PocketCastsImageRequestFactory(context).themed().smallSize()
 
-        playButtonListener.source = AnalyticsSource.FILTERS
-        adapter = EpisodeListAdapter(downloadManager, playbackManager, upNextQueue, settings, this::onRowClick, playButtonListener, imageLoader, multiSelectHelper, childFragmentManager)
+        playButtonListener.source = SourceView.FILTERS
+    }
+
+    // Cannot call notify.notifyItemChanged directly because the compiler gets confused
+    // when the adapter's constructor includes references to the adapter
+    private fun lazyNotifyAdapterChanged(
+        @Suppress("UNUSED_PARAMETER") episode: BaseEpisode,
+        index: Int,
+    ) {
+        adapter.notifyItemChanged(index)
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -145,23 +188,22 @@ class FilterEpisodeListFragment : BaseFragment() {
         recyclerView.adapter = adapter
         listSavedState?.let { recyclerView.layoutManager?.onRestoreInstanceState(it) }
         setShowFilterOptions(showingFilterOptionsBeforeModal)
+        settings.trackingAutoPlaySource.set(AutoPlaySource.fromId(viewModel.playlistUUID), updateModifiedAt = false)
     }
 
     override fun onDestroyView() {
         binding?.recyclerView?.adapter = null
+        multiSelectHelper.cleanup()
         super.onDestroyView()
 
         binding = null
 
-        activity?.let {
-            statusBarColor = StatusBarColor.Light
-            updateStatusBar()
-        }
+        updateStatusBar()
     }
 
-    private fun onRowClick(episode: Playable) {
-        if (episode is Episode) {
-            val fragment = EpisodeFragment.newInstance(episode = episode, source = EpisodeViewSource.FILTERS)
+    private fun onRowClick(episode: BaseEpisode) {
+        if (episode is PodcastEpisode) {
+            val fragment = EpisodeContainerFragment.newInstance(episode = episode, source = EpisodeViewSource.FILTERS)
             fragment.show(parentFragmentManager, "episode_card")
         }
     }
@@ -190,29 +232,34 @@ class FilterEpisodeListFragment : BaseFragment() {
             menu = R.menu.menu_filter,
             chromeCastButton = Shown(chromeCastAnalytics),
             navigationIcon = BackArrow,
-            toolbarColors = null
+            toolbarColors = null,
         )
 
         toolbar.setOnMenuItemClickListener { item ->
             when (item?.itemId) {
                 R.id.menu_delete -> {
+                    analyticsTracker.track(AnalyticsEvent.FILTER_OPTIONS_MODAL_OPTION_TAPPED, mapOf("option" to "delete_filter"))
                     showDeleteConfirmation()
                     true
                 }
                 R.id.menu_playall -> {
+                    analyticsTracker.track(AnalyticsEvent.FILTER_OPTIONS_MODAL_OPTION_TAPPED, mapOf("option" to "play_all"))
                     val firstEpisode = viewModel.episodesList.value?.firstOrNull() ?: return@setOnMenuItemClickListener true
                     playAllFromHereWarning(firstEpisode, isFirstEpisode = true)
                     true
                 }
                 R.id.menu_sortby -> {
+                    analyticsTracker.track(AnalyticsEvent.FILTER_OPTIONS_MODAL_OPTION_TAPPED, mapOf("option" to "sort_by"))
                     showSortOptions()
                     true
                 }
                 R.id.menu_options -> {
+                    analyticsTracker.track(AnalyticsEvent.FILTER_OPTIONS_MODAL_OPTION_TAPPED, mapOf("option" to "filter_options"))
                     showFilterSettings()
                     true
                 }
                 R.id.menu_downloadall -> {
+                    analyticsTracker.track(AnalyticsEvent.FILTER_OPTIONS_MODAL_OPTION_TAPPED, mapOf("option" to "download_all"))
                     downloadAll()
                     true
                 }
@@ -242,6 +289,23 @@ class FilterEpisodeListFragment : BaseFragment() {
             }
         }
 
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                episodeListBookmarkViewModel.stateFlow.collect {
+                    adapter.setBookmarksAvailable(it.isBookmarkFeatureAvailable)
+                    adapter.notifyDataSetChanged()
+                }
+            }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                settings.bottomInset.collect {
+                    binding.recyclerView.updatePadding(bottom = it)
+                }
+            }
+        }
+
         // Load color from bundle first
         if (arguments?.containsKey(ARG_COLOR) == true) {
             val color = arguments?.getInt(ARG_COLOR) ?: 0
@@ -268,8 +332,8 @@ class FilterEpisodeListFragment : BaseFragment() {
             chipPodcasts.setOnClickListener {
                 (activity as FragmentHostListener).showModal(
                     PodcastOptionsFragment.newInstance(
-                        playlist
-                    )
+                        playlist,
+                    ),
                 )
             }
 
@@ -289,8 +353,8 @@ class FilterEpisodeListFragment : BaseFragment() {
             chipEpisodes.setOnClickListener {
                 (activity as FragmentHostListener).showModal(
                     EpisodeOptionsFragment.newInstance(
-                        playlist
-                    )
+                        playlist,
+                    ),
                 )
             }
 
@@ -305,8 +369,8 @@ class FilterEpisodeListFragment : BaseFragment() {
                 (activity as FragmentHostListener).showModal(
                     TimeOptionsFragment.newInstance(
                         playlist,
-                        TimeOptionsFragment.OptionsType.Time
-                    )
+                        TimeOptionsFragment.OptionsType.Time,
+                    ),
                 )
             }
 
@@ -320,8 +384,8 @@ class FilterEpisodeListFragment : BaseFragment() {
             chipDuration.setOnClickListener {
                 (activity as FragmentHostListener).showModal(
                     DurationOptionsFragment.newInstance(
-                        playlist
-                    )
+                        playlist,
+                    ),
                 )
             }
 
@@ -338,8 +402,8 @@ class FilterEpisodeListFragment : BaseFragment() {
                 (activity as FragmentHostListener).showModal(
                     TimeOptionsFragment.newInstance(
                         playlist,
-                        TimeOptionsFragment.OptionsType.Downloaded
-                    )
+                        TimeOptionsFragment.OptionsType.Downloaded,
+                    ),
                 )
             }
 
@@ -356,8 +420,8 @@ class FilterEpisodeListFragment : BaseFragment() {
                 (activity as FragmentHostListener).showModal(
                     TimeOptionsFragment.newInstance(
                         playlist,
-                        TimeOptionsFragment.OptionsType.AudioVideo
-                    )
+                        TimeOptionsFragment.OptionsType.AudioVideo,
+                    ),
                 )
             }
 
@@ -385,42 +449,42 @@ class FilterEpisodeListFragment : BaseFragment() {
         binding.btnChevron.setOnClickListener(clickListener)
         toolbar.setOnClickListener(clickListener)
 
-        val itemTouchHelper = EpisodeItemTouchHelper(this::episodeSwipedRightItem1, this::episodeSwipedRightItem2, viewModel::episodeSwiped)
+        val itemTouchHelper = EpisodeItemTouchHelper()
         itemTouchHelper.attachToRecyclerView(recyclerView)
 
         val multiSelectToolbar = binding.multiSelectToolbar
-        multiSelectHelper.source = AnalyticsSource.FILTERS
-        multiSelectHelper.isMultiSelectingLive.observe(
-            viewLifecycleOwner,
-            Observer {
+        multiSelectHelper.context = requireActivity()
+        multiSelectHelper.source = SourceView.FILTERS
+        multiSelectHelper.isMultiSelectingLive.observe(viewLifecycleOwner) { isMultiSelecting ->
+            if (!multiSelectLoaded) {
+                multiSelectLoaded = true
+                return@observe // Skip the initial value or else it will always hide the filter controls on load
+            }
 
-                if (!multiSelectLoaded) {
-                    multiSelectLoaded = true
-                    return@Observer // Skip the initial value or else it will always hide the filter controls on load
-                }
-
+            val wasMultiSelecting = multiSelectToolbar.isVisible
+            if (wasMultiSelecting != isMultiSelecting) {
                 analyticsTracker.track(
-                    if (it) {
+                    if (isMultiSelecting) {
                         AnalyticsEvent.FILTER_MULTI_SELECT_ENTERED
                     } else {
                         AnalyticsEvent.FILTER_MULTI_SELECT_EXITED
-                    }
+                    },
                 )
-
-                if (!multiSelectToolbar.isVisible) {
-                    showingFilterOptionsBeforeMultiSelect = layoutFilterOptions.isVisible
-                    setShowFilterOptions(false)
-                } else {
-                    setShowFilterOptions(showingFilterOptionsBeforeMultiSelect)
-                }
-                multiSelectToolbar.isVisible = it
-                toolbar.isVisible = !it
-
-                adapter.notifyDataSetChanged()
             }
-        )
+
+            if (isMultiSelecting) {
+                showingFilterOptionsBeforeMultiSelect = layoutFilterOptions.isVisible
+                setShowFilterOptions(false)
+            } else {
+                setShowFilterOptions(showingFilterOptionsBeforeMultiSelect)
+            }
+            multiSelectToolbar.isVisible = isMultiSelecting
+            toolbar.isVisible = !isMultiSelecting
+
+            adapter.notifyDataSetChanged()
+        }
         multiSelectHelper.coordinatorLayout = (activity as FragmentHostListener).snackBarView()
-        multiSelectHelper.listener = object : MultiSelectHelper.Listener {
+        multiSelectHelper.listener = object : MultiSelectHelper.Listener<BaseEpisode> {
             override fun multiSelectSelectAll() {
                 analyticsTracker.track(AnalyticsEvent.FILTER_SELECT_ALL_BUTTON_TAPPED)
                 val episodes = viewModel.episodesList.value
@@ -433,16 +497,16 @@ class FilterEpisodeListFragment : BaseFragment() {
             override fun multiSelectSelectNone() {
                 val episodes = viewModel.episodesList.value
                 if (episodes != null) {
-                    episodes.forEach { multiSelectHelper.deselect(it) }
+                    multiSelectHelper.deselectAllInList(episodes)
                     adapter.notifyDataSetChanged()
                 }
             }
 
-            override fun multiSelectSelectAllUp(episode: Playable) {
+            override fun multiSelectSelectAllUp(multiSelectable: BaseEpisode) {
                 analyticsTracker.track(AnalyticsEvent.FILTER_SELECT_ALL_ABOVE)
                 val episodes = viewModel.episodesList.value
                 if (episodes != null) {
-                    val startIndex = episodes.indexOf(episode)
+                    val startIndex = episodes.indexOf(multiSelectable)
                     if (startIndex > -1) {
                         multiSelectHelper.selectAllInList(episodes.subList(0, startIndex + 1))
                     }
@@ -451,11 +515,37 @@ class FilterEpisodeListFragment : BaseFragment() {
                 }
             }
 
-            override fun multiSelectSelectAllDown(episode: Playable) {
+            override fun multiDeselectAllBelow(multiSelectable: BaseEpisode) {
+                analyticsTracker.track(AnalyticsEvent.FILTER_DESELECT_ALL_BELOW)
+                val episodes = viewModel.episodesList.value
+                if (episodes != null) {
+                    val startIndex = episodes.indexOf(multiSelectable)
+                    if (startIndex > -1) {
+                        val episodesBelow = episodes.subList(startIndex, episodes.size)
+                        multiSelectHelper.deselectAllInList(episodesBelow)
+                        adapter.notifyDataSetChanged()
+                    }
+                }
+            }
+
+            override fun multiDeselectAllAbove(multiSelectable: BaseEpisode) {
+                analyticsTracker.track(AnalyticsEvent.FILTER_DESELECT_ALL_ABOVE)
+                val episodes = viewModel.episodesList.value
+                if (episodes != null) {
+                    val startIndex = episodes.indexOf(multiSelectable)
+                    if (startIndex > -1) {
+                        val episodesAbove = episodes.subList(0, startIndex + 1)
+                        multiSelectHelper.deselectAllInList(episodesAbove)
+                        adapter.notifyDataSetChanged()
+                    }
+                }
+            }
+
+            override fun multiSelectSelectAllDown(multiSelectable: BaseEpisode) {
                 analyticsTracker.track(AnalyticsEvent.FILTER_SELECT_ALL_BELOW)
                 val episodes = viewModel.episodesList.value
                 if (episodes != null) {
-                    val startIndex = episodes.indexOf(episode)
+                    val startIndex = episodes.indexOf(multiSelectable)
                     if (startIndex > -1) {
                         multiSelectHelper.selectAllInList(episodes.subList(startIndex, episodes.size))
                     }
@@ -464,18 +554,18 @@ class FilterEpisodeListFragment : BaseFragment() {
                 }
             }
         }
-        multiSelectToolbar.setup(viewLifecycleOwner, multiSelectHelper, menuRes = null, fragmentManager = parentFragmentManager)
+        multiSelectToolbar.setup(viewLifecycleOwner, multiSelectHelper, menuRes = null, activity = requireActivity())
     }
 
     private fun updateUIColors(@ColorInt color: Int) {
         val binding = binding ?: return
 
         val toolbar = binding.toolbar
-        val colors = ToolbarColors.User(color = color, theme = theme)
+        val colors = ToolbarColors.user(color = color, theme = theme)
         setupToolbarAndStatusBar(
             toolbar = toolbar,
             navigationIcon = BackArrow,
-            toolbarColors = colors
+            toolbarColors = colors,
         )
 
         binding.layoutFilterOptions.setBackgroundColor(colors.backgroundColor)
@@ -497,22 +587,22 @@ class FilterEpisodeListFragment : BaseFragment() {
                 .addCheckedOption(
                     titleId = LR.string.episode_sort_newest_to_oldest,
                     click = { viewModel.changeSort(Playlist.SortOrder.NEWEST_TO_OLDEST) },
-                    checked = (it.sortOrder() == Playlist.SortOrder.NEWEST_TO_OLDEST)
+                    checked = (it.sortOrder() == Playlist.SortOrder.NEWEST_TO_OLDEST),
                 )
                 .addCheckedOption(
                     titleId = LR.string.episode_sort_oldest_to_newest,
                     click = { viewModel.changeSort(Playlist.SortOrder.OLDEST_TO_NEWEST) },
-                    checked = (it.sortOrder() == Playlist.SortOrder.OLDEST_TO_NEWEST)
+                    checked = (it.sortOrder() == Playlist.SortOrder.OLDEST_TO_NEWEST),
                 )
                 .addCheckedOption(
                     titleId = LR.string.episode_sort_short_to_long,
                     click = { viewModel.changeSort(Playlist.SortOrder.SHORTEST_TO_LONGEST) },
-                    checked = (it.sortOrder() == Playlist.SortOrder.SHORTEST_TO_LONGEST)
+                    checked = (it.sortOrder() == Playlist.SortOrder.SHORTEST_TO_LONGEST),
                 )
                 .addCheckedOption(
                     titleId = LR.string.episode_sort_long_to_short,
                     click = { viewModel.changeSort(Playlist.SortOrder.LONGEST_TO_SHORTEST) },
-                    checked = (it.sortOrder() == Playlist.SortOrder.LONGEST_TO_SHORTEST)
+                    checked = (it.sortOrder() == Playlist.SortOrder.LONGEST_TO_SHORTEST),
                 )
             dialog.show(parentFragmentManager, "sort_options")
         }
@@ -539,22 +629,6 @@ class FilterEpisodeListFragment : BaseFragment() {
             .show(childFragmentManager, "confirm")
     }
 
-    private fun episodeSwipedRightItem1(episode: Playable, index: Int) {
-        when (settings.getUpNextSwipeAction()) {
-            Settings.UpNextAction.PLAY_NEXT -> viewModel.episodeSwipeUpNext(episode)
-            Settings.UpNextAction.PLAY_LAST -> viewModel.episodeSwipeUpLast(episode)
-        }
-        adapter.notifyItemChanged(index)
-    }
-
-    private fun episodeSwipedRightItem2(episode: Playable, index: Int) {
-        when (settings.getUpNextSwipeAction()) {
-            Settings.UpNextAction.PLAY_NEXT -> viewModel.episodeSwipeUpLast(episode)
-            Settings.UpNextAction.PLAY_LAST -> viewModel.episodeSwipeUpNext(episode)
-        }
-        adapter.notifyItemChanged(index)
-    }
-
     private fun downloadAll() {
         val episodeCount = (viewModel.episodesList.value ?: emptyList()).count()
         if (episodeCount < 5) {
@@ -577,7 +651,7 @@ class FilterEpisodeListFragment : BaseFragment() {
         }
     }
 
-    private fun playAllFromHereWarning(episode: Episode, isFirstEpisode: Boolean = false) {
+    private fun playAllFromHereWarning(episode: PodcastEpisode, isFirstEpisode: Boolean = false) {
         val count = viewModel.onFromHereCount(episode)
         if (count <= 3) {
             viewModel.onPlayAllFromHere(episode)

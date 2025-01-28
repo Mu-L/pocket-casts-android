@@ -7,7 +7,7 @@ object LocaliseHelper {
     val filterToId = mapOf(
         "In Progress" to R.string.filters_title_in_progress,
         "New Releases" to R.string.filters_title_new_releases,
-        "Starred" to R.string.filters_title_starred
+        "Starred" to R.string.filters_title_starred,
     )
 
     val stringToId = mapOf(
@@ -19,14 +19,18 @@ object LocaliseHelper {
         "fiction" to R.string.discover_category_fiction,
         "government" to R.string.discover_category_government,
         "health & fitness" to R.string.discover_category_health,
+        "health" to R.string.discover_category_health_abbreviation,
         "history" to R.string.discover_category_history,
         "kids & family" to R.string.discover_category_kids,
+        "family" to R.string.discover_category_kids_abbreviation,
         "leisure" to R.string.discover_category_leisure,
         "music" to R.string.discover_category_music,
         "news" to R.string.discover_category_news,
         "religion & spirituality" to R.string.discover_category_religion,
+        "spirituality" to R.string.discover_category_religion_abbreviation,
         "science" to R.string.discover_category_science,
         "society & culture" to R.string.discover_category_society,
+        "culture" to R.string.discover_category_society_abbreviation,
         "sports" to R.string.discover_category_sports,
         "technology" to R.string.discover_category_technology,
         "true crime" to R.string.discover_category_crime,
@@ -75,7 +79,8 @@ object LocaliseHelper {
         "yearly" to R.string.plus_yearly,
         "top" to R.string.discover_top,
         "popular" to R.string.discover_popular,
-        "popular in [regionname]" to R.string.discover_popular_in
+        "popular in [regionname]" to R.string.discover_popular_in,
+        "most popular in [category]" to R.string.discover_most_popular_in,
     )
 
     private val serverMessageIdToStringId = mapOf(
@@ -91,6 +96,8 @@ object LocaliseHelper {
         "login_email_invalid" to R.string.server_login_email_invalid,
         "login_email_taken" to R.string.server_login_email_taken,
         "login_user_register_failed" to R.string.server_login_user_register_failed,
+        "login_password_change_failed" to R.string.server_login_password_change_failed,
+        "login_password_change_success" to R.string.server_login_password_change_success,
         "files_invalid_content_type" to R.string.server_files_invalid_content_type,
         "files_invalid_user" to R.string.server_files_invalid_user,
         "files_file_too_large" to R.string.server_files_file_too_large,
@@ -100,7 +107,13 @@ object LocaliseHelper {
         "files_upload_failed_generic" to R.string.server_files_upload_failed_generic,
         "promo_already_plus" to R.string.server_promo_already_plus,
         "promo_code_expired_or_invalid" to R.string.server_promo_code_expired_or_invalid,
-        "promo_already_redeemed" to R.string.server_promo_already_redeemed
+        "promo_already_redeemed" to R.string.server_promo_already_redeemed,
+        "promo_winback_no_plus" to R.string.server_promo_winback_no_plus,
+        "user_email_failed" to R.string.server_user_email_failed,
+        "user_email_success" to R.string.server_user_email_success,
+        "user_email_verification_failed" to R.string.server_user_email_verification_failed,
+        "user_change_email_success" to R.string.server_user_change_email_success,
+        "user_delete_account_with_sub_failed" to R.string.server_user_delete_account_with_sub_failed,
     )
 
     fun serverMessageIdToMessage(serverMessageId: String?, getResourceString: (Int) -> String?) =

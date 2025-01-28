@@ -6,7 +6,11 @@ import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.widget.Toolbar
+import androidx.core.view.updatePadding
 import androidx.fragment.app.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.ItemTouchHelper
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
@@ -20,18 +24,19 @@ import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragment
 import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragmentToolbar.ChromeCastButton.Shown
 import au.com.shiftyjelly.pocketcasts.views.helper.NavigationIcon.None
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @AndroidEntryPoint
 class FiltersFragment : BaseFragment(), CoroutineScope, Toolbar.OnMenuItemClickListener {
     @Inject lateinit var settings: Settings
+
     @Inject lateinit var playlistManager: PlaylistManager
+
     @Inject lateinit var castManager: CastManager
 
     private val viewModel: FiltersFragmentViewModel by viewModels()
@@ -71,7 +76,7 @@ class FiltersFragment : BaseFragment(), CoroutineScope, Toolbar.OnMenuItemClickL
             title = getString(LR.string.filters),
             menu = R.menu.menu_filters,
             chromeCastButton = Shown(chromeCastAnalytics),
-            navigationIcon = None
+            navigationIcon = None,
         )
         binding.toolbar.setOnMenuItemClickListener(this)
 
@@ -109,11 +114,20 @@ class FiltersFragment : BaseFragment(), CoroutineScope, Toolbar.OnMenuItemClickL
         itemTouchHelper.attachToRecyclerView(recyclerView)
 
         checkForSavedFilter()
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                settings.bottomInset.collect {
+                    binding.recyclerView.updatePadding(bottom = it)
+                }
+            }
+        }
     }
 
     override fun onMenuItemClick(item: MenuItem): Boolean {
         return when (item.itemId) {
             R.id.filter_create -> {
+                viewModel.trackOnCreateFilterTap()
                 openCreate()
                 true
             }
@@ -121,21 +135,17 @@ class FiltersFragment : BaseFragment(), CoroutineScope, Toolbar.OnMenuItemClickL
         }
     }
 
-    @Suppress("DEPRECATION")
-    override fun setUserVisibleHint(visible: Boolean) {
-        super.setUserVisibleHint(visible)
-        if (visible && isAdded) {
-            checkForSavedFilter()
-        }
+    override fun onResume() {
+        super.onResume()
+        checkForSavedFilter()
     }
 
     private fun checkForSavedFilter() {
         val shouldOpenSavedFilter = settings.selectedFilter() != null && lastFilterUuidShown != settings.selectedFilter()
         if (shouldOpenSavedFilter) {
-            runBlocking {
-                val playlistUUID = settings.selectedFilter() ?: return@runBlocking
-                lastFilterUuidShown = playlistUUID
-                val playlist = withContext(Dispatchers.Default) { playlistManager.findByUuid(playlistUUID) } ?: return@runBlocking
+            val playlistUuid = settings.selectedFilter() ?: return
+            lastFilterUuidShown = playlistUuid
+            viewModel.findPlaylistByUuid(playlistUuid) { playlist ->
                 openPlaylist(playlist, isNewFilter = false)
             }
         } else if (!viewModel.isFragmentChangingConfigurations) {
@@ -170,13 +180,12 @@ class FiltersFragment : BaseFragment(), CoroutineScope, Toolbar.OnMenuItemClickL
 
 private class FiltersListItemTouchCallback(
     val onMoveListener: (from: Int, to: Int) -> Unit,
-    val onFinish: (from: Int?, to: Int?) -> Unit
+    val onFinish: (from: Int?, to: Int?) -> Unit,
 ) : ItemTouchHelper.SimpleCallback(ItemTouchHelper.UP.or(ItemTouchHelper.DOWN), 0) {
     private var moveFrom: Int? = null
     private var moveTo: Int? = null
 
     override fun onMove(recyclerView: RecyclerView, viewHolder: RecyclerView.ViewHolder, target: RecyclerView.ViewHolder): Boolean {
-
         // Only update moveFrom if it is not initialized because it represents the position where the move started
         if (moveFrom == null) {
             moveFrom = viewHolder.bindingAdapterPosition

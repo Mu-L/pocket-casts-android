@@ -1,23 +1,34 @@
 package au.com.shiftyjelly.pocketcasts.utils
 
-import timber.log.Timber
-import java.time.LocalDateTime
+import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.time.format.FormatStyle
 import java.util.Date
 import kotlin.math.roundToInt
+import kotlin.time.Duration
+import kotlin.time.toKotlinDuration
+import java.time.Duration as JavaDuration
 
 object DateUtil {
 
     const val MILLISECS_PER_DAY = (24 * 60 * 60 * 1000).toLong()
 
+    private val dateTimeFormatteMedium = DateTimeFormatter.ofLocalizedDate(FormatStyle.MEDIUM)
     private val dateTimeFormatterLong = DateTimeFormatter.ofLocalizedDate(FormatStyle.LONG)
 
     fun daysBetweenTwoDates(dateOne: Date, dateTwo: Date): Int {
         val timeDifference = (dateTwo.time - dateOne.time).toDouble()
         val result = timeDifference / MILLISECS_PER_DAY
         return result.roundToInt()
+    }
+
+    fun toLocalizedFormatMediumStyle(date: Date): String {
+        return date
+            .toInstant()
+            .atZone(ZoneId.systemDefault())
+            .toLocalDate()
+            .format(dateTimeFormatteMedium)
     }
 
     fun toLocalizedFormatLongStyle(date: Date): String {
@@ -32,21 +43,17 @@ object DateUtil {
         return date
             .toInstant()
             .atZone(ZoneId.systemDefault())
-            .toLocalDate()
+            .toLocalDateTime()
             .format(DateTimeFormatter.ofPattern(pattern))
-    }
-
-    fun toEpochMillis(localDateTime: LocalDateTime) = try {
-        localDateTime
-            .atZone(ZoneId.systemDefault())
-            .toInstant()
-            .toEpochMilli()
-    } catch (e: Exception) {
-        Timber.e("Conversion to epoch millis failed [${e.message}]")
-        null
     }
 }
 
 fun Date.timeIntervalSinceNow(): Long {
     return Date().time - this.time
+}
+
+fun Date.toDurationFromNow(): Duration {
+    return JavaDuration.between(Instant.now(), toInstant())
+        .toKotlinDuration()
+        .coerceAtLeast(Duration.ZERO)
 }

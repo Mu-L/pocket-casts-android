@@ -6,8 +6,10 @@ import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
+import androidx.activity.OnBackPressedCallback
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.IntentCompat
 import androidx.core.view.isVisible
 import androidx.navigation.NavDestination
 import androidx.navigation.findNavController
@@ -18,8 +20,7 @@ import au.com.shiftyjelly.pocketcasts.account.viewmodel.CreateAccountState
 import au.com.shiftyjelly.pocketcasts.account.viewmodel.CreateAccountViewModel
 import au.com.shiftyjelly.pocketcasts.account.viewmodel.SubscriptionType
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import au.com.shiftyjelly.pocketcasts.analytics.FirebaseAnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 import au.com.shiftyjelly.pocketcasts.utils.Util
 import au.com.shiftyjelly.pocketcasts.views.helper.UiUtil
@@ -31,7 +32,8 @@ import au.com.shiftyjelly.pocketcasts.images.R as IR
 class AccountActivity : AppCompatActivity() {
 
     @Inject lateinit var theme: Theme
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
+
+    @Inject lateinit var analyticsTracker: AnalyticsTracker
     private val viewModel: CreateAccountViewModel by viewModels()
     private lateinit var binding: AccountActivityBinding
 
@@ -43,23 +45,33 @@ class AccountActivity : AppCompatActivity() {
         val view = binding.root
         setContentView(view)
 
+        onBackPressedDispatcher.addCallback(
+            this,
+            object : OnBackPressedCallback(true) {
+                override fun handleOnBackPressed() {
+                    handleBackPressed()
+                }
+            },
+        )
+
+        val navController = findNavController(R.id.nav_host_fragment)
+        binding.carHeader?.btnClose?.setOnClickListener {
+            if (!navController.popBackStack()) {
+                finish()
+            }
+        }
+
         if (savedInstanceState == null) {
-            val navController = findNavController(R.id.nav_host_fragment)
             val navInflater = navController.navInflater
             val graph = navInflater.inflate(R.navigation.account_nav_graph)
             val arguments = Bundle()
 
-            val accountAuthenticatorResponse = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                intent.getParcelableExtra(KEY_ACCOUNT_AUTHENTICATOR_RESPONSE, AccountAuthenticatorResponse::class.java)
-            } else {
-                @Suppress("DEPRECATION")
-                intent.getParcelableExtra(KEY_ACCOUNT_AUTHENTICATOR_RESPONSE)
-            }
-            if (accountAuthenticatorResponse != null) {
+            // Temporary workaround that that can be removed after the upgrade to Android 11 in August 2023.
+            val navigateToSignIn = Build.MANUFACTURER.lowercase() == "mercedes-benz" && Build.VERSION.SDK_INT < Build.VERSION_CODES.R
+
+            val accountAuthenticatorResponse = IntentCompat.getParcelableExtra(intent, KEY_ACCOUNT_AUTHENTICATOR_RESPONSE, AccountAuthenticatorResponse::class.java)
+            if (accountAuthenticatorResponse != null || navigateToSignIn) {
                 graph.setStartDestination(R.id.signInFragment)
-            } else if (isNewUpgradeInstance(intent)) {
-                viewModel.clearReadyForUpgrade()
-                graph.setStartDestination(R.id.createFrequencyFragment)
             } else if (isPromoCodeInstance(intent)) {
                 graph.setStartDestination(R.id.promoCodeFragment)
                 arguments.putString(PromoCodeFragment.ARG_PROMO_CODE, intent.getStringExtra(PROMO_CODE_VALUE))
@@ -71,14 +83,11 @@ class AccountActivity : AppCompatActivity() {
                 graph.setStartDestination(R.id.accountFragment)
             }
 
-            viewModel.supporterInstance = intent.getBooleanExtra(SUPPORTER_INTENT, false)
-
             navController.setGraph(graph, arguments)
 
             val navConfiguration = AppBarConfiguration(navController.graph)
             binding.toolbar?.setupWithNavController(navController, navConfiguration)
-            binding.toolbar?.setNavigationOnClickListener { _ -> onBackPressed() }
-            binding.carHeader?.btnClose?.setOnClickListener { onBackPressed() }
+            binding.toolbar?.setNavigationOnClickListener { _ -> handleBackPressed() }
 
             navController.addOnDestinationChangedListener { _, destination, _ ->
                 destination.trackShown()
@@ -106,40 +115,29 @@ class AccountActivity : AppCompatActivity() {
         }
     }
 
-    override fun onBackPressed() {
+    private fun handleBackPressed() {
         val currentFragment = findNavController(R.id.nav_host_fragment).currentDestination
         currentFragment?.trackDismissed()
-        if (currentFragment?.id == R.id.createPayNowFragment || currentFragment?.id == R.id.createDoneFragment) {
+
+        if (currentFragment?.id == R.id.createDoneFragment) {
             finish()
             return
         }
-        if (currentFragment?.id == R.id.accountFragment) {
-            FirebaseAnalyticsTracker.closeAccountMissingClicked()
-        }
 
         UiUtil.hideKeyboard(binding.root)
-        @Suppress("DEPRECATION")
-        super.onBackPressed()
+        onBackPressedDispatcher.onBackPressed()
     }
 
     private fun NavDestination.trackShown() {
         val analyticsEvent = when (id) {
             R.id.accountFragment -> AnalyticsEvent.SETUP_ACCOUNT_SHOWN
             R.id.signInFragment -> AnalyticsEvent.SIGNIN_SHOWN
-            R.id.createAccountFragment -> AnalyticsEvent.SELECT_ACCOUNT_TYPE_SHOWN
             R.id.createEmailFragment -> AnalyticsEvent.CREATE_ACCOUNT_SHOWN
-            R.id.createTOSFragment -> AnalyticsEvent.TERMS_OF_USE_SHOWN
-            R.id.createFrequencyFragment -> AnalyticsEvent.SELECT_PAYMENT_FREQUENCY_SHOWN
-            R.id.createPayNowFragment -> AnalyticsEvent.CONFIRM_PAYMENT_SHOWN
             R.id.resetPasswordFragment -> AnalyticsEvent.FORGOT_PASSWORD_SHOWN
             R.id.createDoneFragment -> AnalyticsEvent.ACCOUNT_UPDATED_SHOWN
             else -> null
         }
         val properties = when (id) {
-            R.id.createPayNowFragment -> {
-                val subscription = viewModel.subscription.value
-                subscription?.let { mapOf(PRODUCT_KEY to it.productDetails.productId) }
-            }
             R.id.createDoneFragment -> {
                 val source = when (viewModel.createAccountState.value) {
                     CreateAccountState.AccountCreated -> AccountUpdatedSource.CREATE_ACCOUNT.analyticsValue
@@ -158,11 +156,7 @@ class AccountActivity : AppCompatActivity() {
         val analyticsEvent = when (id) {
             R.id.accountFragment -> AnalyticsEvent.SETUP_ACCOUNT_DISMISSED
             R.id.signInFragment -> AnalyticsEvent.SIGNIN_DISMISSED
-            R.id.createAccountFragment -> AnalyticsEvent.SELECT_ACCOUNT_TYPE_DISMISSED
             R.id.createEmailFragment -> AnalyticsEvent.CREATE_ACCOUNT_DISMISSED
-            R.id.createTOSFragment -> AnalyticsEvent.TERMS_OF_USE_DISMISSED
-            R.id.createFrequencyFragment -> AnalyticsEvent.SELECT_PAYMENT_FREQUENCY_DISMISSED
-            R.id.createPayNowFragment -> AnalyticsEvent.CONFIRM_PAYMENT_DISMISSED
             R.id.resetPasswordFragment -> AnalyticsEvent.FORGOT_PASSWORD_DISMISSED
             R.id.createDoneFragment -> AnalyticsEvent.ACCOUNT_UPDATED_DISMISSED
             else -> null
@@ -202,7 +196,6 @@ class AccountActivity : AppCompatActivity() {
         private const val IS_PROMO_CODE = "account_activity.is_promo_code"
         const val PROMO_CODE_VALUE = "account_activity.promo_code"
         const val PROMO_CODE_RETURN_DESCRIPTION = "account_activity.promo_code_return_description"
-        const val SUPPORTER_INTENT = "account_activity.supporter"
 
         fun promoCodeInstance(context: Context?, code: String): Intent {
             val intent = Intent(context, AccountActivity::class.java)

@@ -9,6 +9,7 @@ import androidx.appcompat.content.res.AppCompatResources
 import androidx.core.content.ContextCompat
 import androidx.core.view.isVisible
 import androidx.fragment.app.viewModels
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.profile.R
 import au.com.shiftyjelly.pocketcasts.profile.databinding.FragmentCloudSettingsBinding
@@ -21,6 +22,7 @@ import au.com.shiftyjelly.pocketcasts.views.helper.NavigationIcon.BackArrow
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
+import au.com.shiftyjelly.pocketcasts.ui.R as UR
 
 @AndroidEntryPoint
 class CloudSettingsFragment : BaseFragment() {
@@ -45,6 +47,8 @@ class CloudSettingsFragment : BaseFragment() {
         return binding?.root
     }
 
+    @Deprecated("Deprecated in Java")
+    @Suppress("DEPRECATION")
     override fun onPrepareOptionsMenu(menu: Menu) {
         super.onPrepareOptionsMenu(menu)
         menu.clear()
@@ -59,8 +63,8 @@ class CloudSettingsFragment : BaseFragment() {
 
         context?.let { context ->
             AppCompatResources.getDrawable(context, R.drawable.ic_lock)?.let {
-                val color0 = ContextCompat.getColor(context, R.color.plus_gold_dark)
-                val color1 = ContextCompat.getColor(context, R.color.plus_gold_light)
+                val color0 = ContextCompat.getColor(context, UR.color.plus_gold_dark)
+                val color1 = ContextCompat.getColor(context, UR.color.plus_gold_light)
                 binding.imgLock.setup(it, color0, color1)
             }
         }
@@ -68,59 +72,60 @@ class CloudSettingsFragment : BaseFragment() {
         val lblDeleteCloudFileAfterPlaying = binding.lblDeleteCloudFileAfterPlaying
         val swtDeleteCloudFileAfterPlaying = binding.swtDeleteCloudFileAfterPlaying
         viewModel.signInState.observe(viewLifecycleOwner) { signInState ->
-            lblDeleteCloudFileAfterPlaying.isVisible = signInState.isSignedInAsPlus
-            swtDeleteCloudFileAfterPlaying.isVisible = signInState.isSignedInAsPlus
+            lblDeleteCloudFileAfterPlaying.isVisible = signInState.isSignedInAsPlusOrPatron
+            swtDeleteCloudFileAfterPlaying.isVisible = signInState.isSignedInAsPlusOrPatron
 
-            binding.plusLayout.isEnabled = signInState.isSignedInAsPlus
-            binding.plusLayout.alpha = if (signInState.isSignedInAsPlus) 1.0f else 0.5f
-            binding.imgLock.isVisible = !signInState.isSignedInAsPlus
-            binding.btnLock.isVisible = !signInState.isSignedInAsPlus
+            binding.plusLayout.isEnabled = signInState.isSignedInAsPlusOrPatron
+            binding.plusLayout.alpha = if (signInState.isSignedInAsPlusOrPatron) 1.0f else 0.5f
+            binding.imgLock.isVisible = !signInState.isSignedInAsPlusOrPatron
+            binding.btnLock.isVisible = !signInState.isSignedInAsPlusOrPatron
 
-            binding.swtAutoUploadToCloud.isEnabled = signInState.isSignedInAsPlus
-            binding.swtAutoDownloadFromCloud.isEnabled = signInState.isSignedInAsPlus
-            binding.swtCloudOnlyOnWiFi.isEnabled = signInState.isSignedInAsPlus
+            binding.swtAutoUploadToCloud.isEnabled = signInState.isSignedInAsPlusOrPatron
+            binding.swtAutoDownloadFromCloud.isEnabled = signInState.isSignedInAsPlusOrPatron
+            binding.swtCloudOnlyOnWiFi.isEnabled = signInState.isSignedInAsPlusOrPatron
 
-            binding.upgradeLayout.isVisible = !signInState.isSignedInAsPlus && !settings.getUpgradeClosedCloudSettings()
+            binding.upgradeLayout.isVisible = !signInState.isSignedInAsPlusOrPatron && !settings.getUpgradeClosedCloudSettings()
         }
 
         with(binding.swtAutoAddToUpNext) {
-            isChecked = settings.getCloudAddToUpNext()
+            isChecked = settings.cloudAddToUpNext.value
             setOnCheckedChangeListener { _, isChecked ->
                 viewModel.setAddToUpNext(isChecked)
             }
         }
         with(binding.swtDeleteLocalFileAfterPlaying) {
-            isChecked = settings.getDeleteLocalFileAfterPlaying()
+            isChecked = settings.deleteLocalFileAfterPlaying.value
             setOnCheckedChangeListener { _, isChecked ->
                 viewModel.setDeleteLocalFileAfterPlaying(isChecked)
             }
         }
         with(binding.swtDeleteCloudFileAfterPlaying) {
-            isChecked = settings.getDeleteCloudFileAfterPlaying()
+            isChecked = settings.deleteCloudFileAfterPlaying.value
             setOnCheckedChangeListener { _, isChecked ->
                 viewModel.setDeleteCloudFileAfterPlaying(isChecked)
             }
         }
         with(binding.swtAutoUploadToCloud) {
-            isChecked = settings.getCloudAutoUpload()
+            isChecked = settings.cloudAutoUpload.value
             setOnCheckedChangeListener { _, isChecked ->
                 viewModel.setCloudAutoUpload(isChecked)
             }
         }
         with(binding.swtAutoDownloadFromCloud) {
-            isChecked = settings.getCloudAutoDownload()
+            isChecked = settings.cloudAutoDownload.value
             setOnCheckedChangeListener { _, isChecked ->
                 viewModel.setCloudAutoDownload(isChecked)
             }
         }
         with(binding.swtCloudOnlyOnWiFi) {
-            isChecked = settings.getCloudOnlyWifi()
+            isChecked = settings.cloudDownloadOnlyOnWifi.value
             setOnCheckedChangeListener { _, isChecked ->
                 viewModel.setCloudOnlyWifi(isChecked)
             }
         }
 
         binding.btnClose.setOnClickListener {
+            viewModel.onUpgradeBannerDismissed(SourceView.FILES_SETTINGS)
             settings.setUpgradeClosedCloudSettings(true)
             binding.upgradeLayout.isVisible = false
         }
@@ -129,7 +134,7 @@ class CloudSettingsFragment : BaseFragment() {
             binding.btnLock,
             binding.imgLogo,
             binding.lblGetMore,
-            binding.lblFindMore
+            binding.lblFindMore,
         ).forEach {
             it.setOnClickListener { openUpgradeSheet() }
         }
@@ -143,7 +148,7 @@ class CloudSettingsFragment : BaseFragment() {
     private fun openUpgradeSheet() {
         OnboardingLauncher.openOnboardingFlow(
             activity,
-            OnboardingFlow.PlusUpsell(OnboardingUpgradeSource.FILES)
+            OnboardingFlow.Upsell(OnboardingUpgradeSource.FILES),
         )
     }
 }

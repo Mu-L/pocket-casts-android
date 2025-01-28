@@ -8,24 +8,38 @@ import android.content.res.ColorStateList
 import android.graphics.Bitmap
 import android.graphics.drawable.Drawable
 import android.net.Uri
-import android.os.Build
 import android.os.Bundle
-import android.os.Parcelable
 import android.provider.MediaStore
 import android.provider.OpenableColumns
 import android.view.MenuItem
 import android.view.View
 import android.widget.Toast
+import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.annotation.StringRes
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import androidx.core.content.IntentCompat
 import androidx.core.graphics.drawable.toBitmap
 import androidx.core.view.isVisible
+import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
+import androidx.media3.common.Tracks
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.ProgressiveMediaSource
+import androidx.media3.extractor.DefaultExtractorsFactory
+import androidx.media3.extractor.mp3.Mp3Extractor
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import au.com.shiftyjelly.pocketcasts.account.onboarding.OnboardingActivity
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.deeplink.CloudFilesDeepLink
 import au.com.shiftyjelly.pocketcasts.models.entity.UserEpisode
 import au.com.shiftyjelly.pocketcasts.models.to.SignInState
 import au.com.shiftyjelly.pocketcasts.models.to.SubscriptionStatus
@@ -45,28 +59,14 @@ import au.com.shiftyjelly.pocketcasts.settings.onboarding.OnboardingUpgradeSourc
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 import au.com.shiftyjelly.pocketcasts.ui.theme.ThemeColor
 import au.com.shiftyjelly.pocketcasts.utils.Util
+import au.com.shiftyjelly.pocketcasts.views.extensions.setSystemWindowInsetToPadding
 import au.com.shiftyjelly.pocketcasts.views.extensions.setup
 import au.com.shiftyjelly.pocketcasts.views.helper.NavigationIcon
 import au.com.shiftyjelly.pocketcasts.views.helper.UiUtil
 import coil.imageLoader
 import coil.request.ImageRequest
 import coil.target.Target
-import com.google.android.exoplayer2.DefaultLoadControl
-import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.MediaItem
-import com.google.android.exoplayer2.Player
-import com.google.android.exoplayer2.Tracks
-import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
-import com.google.android.exoplayer2.extractor.mp3.Mp3Extractor
-import com.google.android.exoplayer2.source.ProgressiveMediaSource
-import com.google.android.exoplayer2.upstream.DefaultDataSource
-import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
 import dagger.hilt.android.AndroidEntryPoint
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import timber.log.Timber
 import java.io.File
 import java.io.FileOutputStream
 import java.io.InputStream
@@ -75,6 +75,11 @@ import java.util.UUID
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
 import kotlin.math.max
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import timber.log.Timber
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
@@ -83,6 +88,7 @@ private const val ACTION_PICK_FILE = 2
 private const val EXTRA_EXISTING_EPISODE_UUID = "fileUUID"
 private const val EXTRA_FILE_CHOOSER = "filechooser"
 private const val STATE_LAUNCHED_FILE_CHOOSER = "LAUNCHED_FILE_CHOOSER"
+private const val STATE_DATAURI = "DATAURI"
 
 @AndroidEntryPoint
 class AddFileActivity :
@@ -103,16 +109,45 @@ class AddFileActivity :
             intent.putExtra(EXTRA_EXISTING_EPISODE_UUID, fileUuid)
             return intent
         }
+
+        fun darkThemeColors() = listOf(
+            AddFileColourAdapter.Item.Colour(1, ThemeColor.primaryText02Dark, false),
+            AddFileColourAdapter.Item.Colour(2, ThemeColor.filter01Dark, true),
+            AddFileColourAdapter.Item.Colour(3, ThemeColor.filter05Dark, true),
+            AddFileColourAdapter.Item.Colour(4, ThemeColor.filter04Dark, true),
+            AddFileColourAdapter.Item.Colour(5, ThemeColor.filter03Dark, true),
+            AddFileColourAdapter.Item.Colour(6, ThemeColor.filter02Dark, true),
+            AddFileColourAdapter.Item.Colour(7, ThemeColor.filter06Dark, true),
+            AddFileColourAdapter.Item.Colour(8, ThemeColor.filter07Dark, true),
+        )
+
+        private fun lightThemeColors() = listOf(
+
+            AddFileColourAdapter.Item.Colour(1, ThemeColor.primaryText02Light, false),
+            AddFileColourAdapter.Item.Colour(2, ThemeColor.filter01Light, true),
+            AddFileColourAdapter.Item.Colour(3, ThemeColor.filter05Light, true),
+            AddFileColourAdapter.Item.Colour(4, ThemeColor.filter04Light, true),
+            AddFileColourAdapter.Item.Colour(5, ThemeColor.filter03Light, true),
+            AddFileColourAdapter.Item.Colour(6, ThemeColor.filter02Light, true),
+            AddFileColourAdapter.Item.Colour(7, ThemeColor.filter06Light, true),
+            AddFileColourAdapter.Item.Colour(8, ThemeColor.filter07Light, true),
+        )
     }
 
     override val coroutineContext: CoroutineContext
         get() = Dispatchers.Main
 
     @Inject lateinit var fileStorage: FileStorage
+
     @Inject lateinit var userEpisodeManager: UserEpisodeManager
+
     @Inject lateinit var theme: Theme
+
     @Inject lateinit var playbackManager: PlaybackManager
+
     @Inject lateinit var settings: Settings
+
+    @Inject lateinit var analyticsTracker: AnalyticsTracker
 
     private val viewModel: AddFileViewModel by viewModels()
 
@@ -162,12 +197,16 @@ class AddFileActivity :
         binding.upgradeLayout.root.isVisible = readOnly && !settings.getUpgradeClosedAddFile() && !loading
     }
 
+    @UnstableApi
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         theme.setupThemeForConfig(this, resources.configuration)
+        enableEdgeToEdge(navigationBarStyle = theme.getNavigationBarStyle(this))
+        theme.updateWindowStatusBarIcons(window = window)
 
         binding = ActivityAddFileBinding.inflate(layoutInflater)
         val view = binding.root
+        view.setSystemWindowInsetToPadding(right = true, left = true)
         setContentView(view)
 
         colorAdapter = AddFileColourAdapter(
@@ -178,7 +217,7 @@ class AddFileActivity :
                     0
                 }
             },
-            onLockedItemTapped = ::openOnboardingFlow
+            onLockedItemTapped = ::openOnboardingFlow,
         )
 
         updateForm(readOnly = true, loading = true)
@@ -200,6 +239,7 @@ class AddFileActivity :
 
         val upgradeLayout = binding.upgradeLayout.root
         upgradeLayout.findViewById<View>(R.id.btnClose).setOnClickListener {
+            analyticsTracker.track(AnalyticsEvent.UPGRADE_BANNER_DISMISSED, mapOf("source" to OnboardingUpgradeSource.FILES.analyticsValue))
             settings.setUpgradeClosedAddFile(true)
             upgradeLayout.isVisible = false
         }
@@ -226,33 +266,28 @@ class AddFileActivity :
         if (launchedFileChooser) {
             // do nothing as we are returning from the file chooser
         } else if (existingUuid == null) {
+            setupToolbar(title = LR.string.profile_cloud_add_file)
+
             if (isFileChooserMode) {
                 launchFileChooser()
                 return
             }
 
             dataUri = when (intent?.action) {
-                Intent.ACTION_SEND -> {
-                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                        intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
-                    } else {
-                        @Suppress("DEPRECATION")
-                        intent.getParcelableExtra<Parcelable>(Intent.EXTRA_STREAM) as? Uri
-                    }
-                }
+                Intent.ACTION_SEND -> IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)
                 Intent.ACTION_VIEW -> intent.data
                 else -> null
             }
             setupForNewFile(dataUri)
         } else {
+            setupToolbar(title = LR.string.profile_cloud_edit_file)
+
             launch {
                 val userEpisode = getUserEpisode(existingUuid)
                 if (userEpisode == null) {
                     finish()
                     return@launch
                 }
-
-                setupToolbar(title = LR.string.profile_cloud_edit_file)
 
                 binding.lblFilename.text = ""
                 binding.lblFilesize.text = Util.formattedBytes(bytes = userEpisode.sizeInBytes, context = binding.lblFilesize.context)
@@ -273,15 +308,22 @@ class AddFileActivity :
                 updateColorItems()
             }
         }
+
+        @Suppress("DEPRECATION")
+        if (savedInstanceState != null) {
+            dataUri = savedInstanceState.getParcelable(STATE_DATAURI)
+            setupForNewFile(dataUri)
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
         outState.putBoolean(STATE_LAUNCHED_FILE_CHOOSER, launchedFileChooser)
+        outState.putParcelable(STATE_DATAURI, dataUri)
     }
 
     private fun openOnboardingFlow() {
-        openOnboardingFlow(OnboardingFlow.PlusUpsell(OnboardingUpgradeSource.FILES))
+        openOnboardingFlow(OnboardingFlow.Upsell(OnboardingUpgradeSource.FILES))
     }
 
     override fun openOnboardingFlow(onboardingFlow: OnboardingFlow) {
@@ -292,6 +334,7 @@ class AddFileActivity :
         startActivity(OnboardingActivity.newInstance(this, onboardingFlow))
     }
 
+    @UnstableApi
     @Suppress("NAME_SHADOWING")
     private fun setupForNewFile(fileUri: Uri?) {
         val fileUri = fileUri ?: return
@@ -316,37 +359,21 @@ class AddFileActivity :
             navigationIcon = NavigationIcon.BackArrow,
             activity = this,
             theme = theme,
-            menu = R.menu.menu_addfile
+            menu = R.menu.menu_addfile,
         )
         toolbar.setOnMenuItemClickListener(this)
     }
 
     private fun updateColorItems() {
-
-        val colors = mutableListOf<AddFileColourAdapter.Item.Colour>()
-        if (Theme.isDark(this)) {
-            colors.add(AddFileColourAdapter.Item.Colour(1, ThemeColor.primaryText02Dark, false))
-            colors.add(AddFileColourAdapter.Item.Colour(2, ThemeColor.filter01Dark, true))
-            colors.add(AddFileColourAdapter.Item.Colour(3, ThemeColor.filter05Dark, true))
-            colors.add(AddFileColourAdapter.Item.Colour(4, ThemeColor.filter04Dark, true))
-            colors.add(AddFileColourAdapter.Item.Colour(5, ThemeColor.filter03Dark, true))
-            colors.add(AddFileColourAdapter.Item.Colour(6, ThemeColor.filter02Dark, true))
-            colors.add(AddFileColourAdapter.Item.Colour(7, ThemeColor.filter06Dark, true))
-            colors.add(AddFileColourAdapter.Item.Colour(8, ThemeColor.filter07Dark, true))
-        } else {
-            colors.add(AddFileColourAdapter.Item.Colour(1, ThemeColor.primaryText02Light, false))
-            colors.add(AddFileColourAdapter.Item.Colour(2, ThemeColor.filter01Light, true))
-            colors.add(AddFileColourAdapter.Item.Colour(3, ThemeColor.filter05Light, true))
-            colors.add(AddFileColourAdapter.Item.Colour(4, ThemeColor.filter04Light, true))
-            colors.add(AddFileColourAdapter.Item.Colour(5, ThemeColor.filter03Light, true))
-            colors.add(AddFileColourAdapter.Item.Colour(6, ThemeColor.filter02Light, true))
-            colors.add(AddFileColourAdapter.Item.Colour(7, ThemeColor.filter06Light, true))
-            colors.add(AddFileColourAdapter.Item.Colour(8, ThemeColor.filter07Light, true))
-        }
-
         val listItems = mutableListOf<AddFileColourAdapter.Item>()
         listItems.add(AddFileColourAdapter.Item.Image(bitmap))
-        listItems.addAll(colors)
+        listItems.addAll(
+            if (Theme.isDark(this)) {
+                darkThemeColors()
+            } else {
+                lightThemeColors()
+            },
+        )
         colorAdapter.submitList(listItems)
     }
 
@@ -369,6 +396,7 @@ class AddFileActivity :
         binding.btnImage.text = getString(LR.string.profile_files_add_custom_image)
     }
 
+    @UnstableApi
     @Suppress("DEPRECATION")
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
         super.onActivityResult(requestCode, resultCode, data)
@@ -439,6 +467,7 @@ class AddFileActivity :
     override fun onMenuItemClick(item: MenuItem): Boolean {
         return when (item.itemId) {
             R.id.menu_save -> {
+                analyticsTracker.track(AnalyticsEvent.USER_FILE_EDIT_SAVE)
                 saveFile()
                 true
             }
@@ -456,62 +485,83 @@ class AddFileActivity :
             return
         }
 
-        try {
-            binding.layoutLoading.isVisible = true
-            val uri = dataUri ?: return
-            val intentType = intent.type ?: getMimetypeOfContent(uri) ?: uriToFileType(binding.lblFilename.text.toString())
-            if (!(intentType.startsWith("audio/") || intentType.startsWith("video/"))) {
-                return
-            }
+        binding.layoutLoading.isVisible = true
+        val uri = dataUri ?: return
+        val intentType = intent.type ?: getMimetypeOfContent(uri) ?: uriToFileType(binding.lblFilename.text.toString())
+        if (!(intentType.startsWith("audio/") || intentType.startsWith("video/"))) {
+            return
+        }
+
+        if (isUriInvalid(uri)) {
+            analyticsTracker.track(AnalyticsEvent.UPLOADED_FILES_INVALID_FILE_ERROR, mapOf("uri" to uri.toString()))
+
+            Timber.e("Could not upload invalid file")
+
+            val message = getString(LR.string.profile_cloud_add_invalid_file)
+            handleErrorWhenLoadingFile(errorMessage = message)
+        } else {
             launch(Dispatchers.IO) {
-                val userEpisode = UserEpisode(uuid = uuid, publishedDate = Date(), fileType = intent.type)
+                try {
+                    val userEpisode = UserEpisode(uuid = uuid, publishedDate = Date(), fileType = intent.type)
 
-                val savePath = DownloadHelper.pathForEpisode(userEpisode, fileStorage) ?: throw Exception("File path empty")
-                val outFile = File(savePath)
+                    val savePath = DownloadHelper.pathForEpisode(userEpisode, fileStorage) ?: throw Exception("File path empty")
+                    val outFile = File(savePath)
 
-                contentResolver.openInputStream(uri).use { inputStream ->
-                    saveInputStreamToFile(outFile, inputStream)
-                }
-                val imageFile = saveBitmapToFile()
+                    contentResolver.openInputStream(uri).use { inputStream ->
+                        saveInputStreamToFile(outFile, inputStream)
+                    }
+                    val imageFile = saveBitmapToFile()
 
-                userEpisode.downloadedFilePath = outFile.absolutePath
-                userEpisode.episodeStatus = EpisodeStatusEnum.DOWNLOADED
-                userEpisode.title = binding.txtFilename.text.toString()
-                userEpisode.durationMs = length?.toInt() ?: 0
-                userEpisode.fileType = intentType
-                userEpisode.sizeInBytes = sizeInBytes ?: 0
+                    userEpisode.downloadedFilePath = outFile.absolutePath
+                    userEpisode.episodeStatus = EpisodeStatusEnum.DOWNLOADED
+                    userEpisode.title = binding.txtFilename.text.toString()
+                    userEpisode.durationMs = length?.toInt() ?: 0
+                    userEpisode.fileType = intentType
+                    userEpisode.sizeInBytes = sizeInBytes ?: 0
 
-                if (imageFile != null && isCustomImageSelected()) {
-                    userEpisode.artworkUrl = imageFile.absolutePath
-                    userEpisode.hasCustomImage = true
-                } else {
-                    userEpisode.tintColorIndex = colorAdapter.selectedIndex
-                    userEpisode.hasCustomImage = false
-                }
-
-                userEpisodeManager.add(userEpisode, playbackManager)
-                userEpisodeManager.autoUploadToCloudIfReq(userEpisode)
-
-                launch(Dispatchers.Main) {
-                    if (isFileChooserMode) {
-                        finish()
+                    if (imageFile != null && isCustomImageSelected()) {
+                        userEpisode.artworkUrl = imageFile.absolutePath
+                        userEpisode.hasCustomImage = true
                     } else {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(Settings.INTENT_LINK_CLOUD_FILES))
-                        startActivity(intent)
-                        finish()
+                        userEpisode.tintColorIndex = colorAdapter.selectedIndex
+                        userEpisode.hasCustomImage = false
+                    }
+
+                    userEpisodeManager.add(userEpisode, playbackManager)
+                    userEpisodeManager.autoUploadToCloudIfReq(userEpisode)
+
+                    launch(Dispatchers.Main) {
+                        if (isFileChooserMode) {
+                            finish()
+                        } else {
+                            startActivity(CloudFilesDeepLink.toIntent(this@AddFileActivity))
+                            finish()
+                        }
+                    }
+                } catch (e: Exception) {
+                    analyticsTracker.track(AnalyticsEvent.UPLOADED_FILES_UPLOAD_FAILED, mapOf("uri" to uri.toString()))
+
+                    Timber.e(e, "Could not load file")
+
+                    launch(Dispatchers.Main) {
+                        handleErrorWhenLoadingFile(errorMessage = getString(LR.string.profile_cloud_add_file_error, e.message))
                     }
                 }
             }
-        } catch (e: Exception) {
-            binding.layoutLoading.isVisible = false
-            Timber.e(e, "Could not load file")
-            AlertDialog.Builder(this)
-                .setTitle(LR.string.error)
-                .setMessage(getString(LR.string.profile_cloud_add_file_error, e.message))
-                .setPositiveButton(LR.string.ok, null)
-                .show()
         }
     }
+
+    private fun handleErrorWhenLoadingFile(errorMessage: String) {
+        binding.layoutLoading.isVisible = false
+
+        AlertDialog.Builder(this)
+            .setTitle(LR.string.error)
+            .setMessage(errorMessage)
+            .setPositiveButton(LR.string.ok, null)
+            .show()
+    }
+
+    private fun isUriInvalid(uri: Uri?): Boolean = uri == null || contentResolver.getType(uri) == null
 
     private fun uriToFileType(filename: String): String {
         if (!filename.contains(".")) return "audio/mp3"
@@ -577,7 +627,7 @@ class AddFileActivity :
     private fun saveBitmapToFile(): File? {
         val bitmap = this.bitmap ?: return null
         try {
-            val outImageFile = fileStorage.getCloudFileImage(uuid)
+            val outImageFile = fileStorage.getOrCreateCloudFileImage(uuid)
             FileOutputStream(outImageFile).use { outputStream ->
                 bitmap.compress(Bitmap.CompressFormat.PNG, 80, outputStream)
                 return outImageFile
@@ -667,13 +717,17 @@ class AddFileActivity :
         startActivityForResult(Intent.createChooser(intent, "Select Picture"), ACTION_PICK_IMAGE)
     }
 
+    @UnstableApi
     private fun preparePlayer(uri: Uri) {
         val loadControl = DefaultLoadControl.Builder().setBufferDurationsMs(0, 0, 0, 0).build()
-        val player = ExoPlayer.Builder(this).setLoadControl(loadControl).build()
+        val player = ExoPlayer.Builder(this)
+            .setLoadControl(loadControl)
+            .setReleaseTimeoutMs(settings.getPlayerReleaseTimeOutMs())
+            .build()
         player.addListener(object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) {
                 val episodeMetadata = EpisodeFileMetadata()
-                episodeMetadata.read(tracks, true, this@AddFileActivity)
+                episodeMetadata.read(tracks, useEpisodeArtwork = true, this@AddFileActivity)
                 episodeMetadata.embeddedArtworkPath?.let {
                     val artworkUri = Uri.parse(it)
                     loadImageFromUri(artworkUri, isFile = true)

@@ -43,14 +43,17 @@ To build, install, and test the project from the command line:
     │   │   ├── account        # Create account and sign in pages.
     │   │   ├── cartheme       # Automotive resources needed for the account pages.
     │   │   ├── discover       # Discover section.
+    │   │   ├── endofyear      # End of year stats.
     │   │   ├── filters        # Filters section.
     │   │   ├── navigation     # Navigation utilities.
     │   │   ├── player         # Full screen player
     │   │   ├── podcasts       # Podcasts section.
     │   │   ├── profile        # Profile section.
     │   │   ├── search         # Search pages.
-    │   │   └── settings       # Settings pages.
+    │   │   ├── settings       # Settings pages.
+    │   │   └── taskerplugin   # Plugin for integration with Tasker app.
     │   └── services
+    │       ├── analytics      # Analytics code.
     │       ├── compose        # Shared Compose code.
     │       ├── images         # Image resources.
     │       ├── localization   # Contains the strings in English and localized strings from GlotPress. 
@@ -62,24 +65,23 @@ To build, install, and test the project from the command line:
     │       ├── utils          # Utility classes.
     │       └── views          # Shred Only the old views code.
 
+The hierarchy of the modules in the project are reflected in [this diagram](docs/module-diagram.png).
+
 ## Contributing
 
 Read our [Contributing Guide](CONTRIBUTING.md) to learn about reporting issues, contributing code, and more ways to contribute.
-
-## Security
-
-If you happen to find a security vulnerability, please let us know at https://hackerone.com/automattic and allow us to respond before disclosing the issue publicly.
 
 ## Documentation
 
 - [Coding Style](docs/coding-style.md) - guidelines and validation and auto-formatting tools
 - [Pull Request Guidelines](docs/pull-request-guidelines.md) - branch naming and how to write good pull requests
+- [Translations](docs/translations.md) - how the app gets translated and how to contribute translations
 
 ## Signing a Release
 
-To build a _signed_ release, add these lines to your ~/.gradle/gradle.properties file
+To build a _signed_ release, add these lines to your local.properties file
 
-    pocketcastsKeyStoreFile=/Users/username/git/secret.keystore
-    pocketcastsKeyStorePassword=
-    pocketcastsKeyStoreAlias=
-    pocketcastsKeyStoreAliasPassword=
+    signingKeyStoreFile=/Users/username/git/secret.keystore
+    signingKeyStorePassword=
+    signingKeyAlias=
+    signingKeyPassword=

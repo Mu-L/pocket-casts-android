@@ -12,6 +12,7 @@ interface FolderManager {
 
     suspend fun create(name: String, color: Int, podcastsSortType: PodcastsSortType, podcastUuids: List<String>): Folder
     suspend fun delete(folder: Folder)
+    suspend fun deleteAll()
     suspend fun upsertSynced(folder: Folder): Folder
     suspend fun deleteSynced(folderUuid: String)
     suspend fun findByUuid(uuid: String): Folder?
@@ -25,11 +26,9 @@ interface FolderManager {
     fun observeFolders(): Flowable<List<Folder>>
     fun findFoldersFlow(): Flow<List<Folder>>
     fun findFoldersSingle(): Single<List<Folder>>
-    fun findByUuidFlowable(uuid: String): Flowable<List<Folder>>
-    fun findByUuidFlow(uuid: String): Flow<List<Folder>>
     suspend fun updatePositions(folders: List<Folder>)
     suspend fun updateSortPosition(folderItems: List<FolderItem>)
-    fun findFoldersToSync(): List<Folder>
-    fun markAllSynced()
-    fun countFolders(): Int
+    fun findFoldersToSyncBlocking(): List<Folder>
+    suspend fun markAllSynced()
+    suspend fun countFolders(): Int
 }

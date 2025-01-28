@@ -5,13 +5,12 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import au.com.shiftyjelly.pocketcasts.analytics.FirebaseAnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.discover.R
 import au.com.shiftyjelly.pocketcasts.discover.extensions.updateSubscribeButtonIcon
 import au.com.shiftyjelly.pocketcasts.servers.model.DiscoverPodcast
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
+import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 private val differ: DiffUtil.ItemCallback<Any> = object : DiffUtil.ItemCallback<Any>() {
     override fun areItemsTheSame(oldItem: Any, newItem: Any): Boolean {
@@ -33,7 +32,7 @@ private val differ: DiffUtil.ItemCallback<Any> = object : DiffUtil.ItemCallback<
     }
 }
 
-internal class CarouselListRowAdapter(var pillText: String?, val theme: Theme, val onPodcastClicked: ((DiscoverPodcast, String?) -> Unit), val onPodcastSubscribe: ((DiscoverPodcast, String?) -> Unit), private val analyticsTracker: AnalyticsTrackerWrapper) : ListAdapter<Any, CarouselItemViewHolder>(differ) {
+internal class CarouselListRowAdapter(var pillText: String?, val theme: Theme, val onPodcastClicked: ((DiscoverPodcast, String?, Boolean) -> Unit), val onPodcastSubscribe: ((DiscoverPodcast, String?) -> Unit), private val analyticsTracker: AnalyticsTracker) : ListAdapter<Any, CarouselItemViewHolder>(differ) {
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): CarouselItemViewHolder {
         val view = LayoutInflater.from(parent.context).inflate(R.layout.item_carousel, parent, false)
         return CarouselItemViewHolder(theme, view)
@@ -41,37 +40,64 @@ internal class CarouselListRowAdapter(var pillText: String?, val theme: Theme, v
 
     override fun onBindViewHolder(holder: CarouselItemViewHolder, position: Int) {
         val podcast = getItem(position)
+        val context = holder.itemView.context
         if (podcast is DiscoverPodcast) {
-            holder.podcast = podcast
-            holder.setTaglineText(pillText)
-            holder.itemView.setOnClickListener {
-                onPodcastClicked(podcast, null) // no analytics for carousel
+            val tagLineText = if (podcast.isSponsored) {
+                context.getString(LR.string.discover_sponsored)
+            } else {
+                pillText
+            }
+            holder.setPodcast(podcast = podcast)
 
-                FirebaseAnalyticsTracker.openedFeaturedPodcast()
-                analyticsTracker.track(AnalyticsEvent.DISCOVER_FEATURED_PODCAST_TAPPED, AnalyticsProp.featuredPodcastTapped(podcast.uuid))
+            holder.setTaglineText(tagLineText)
+            holder.itemView.setOnClickListener {
+                val isFeatured = podcast.isSponsored || podcast.listId == null
+                onPodcastClicked(podcast, podcast.listId, isFeatured)
+
+                if (podcast.listId != null) {
+                    val listId = podcast.listId as String
+                    analyticsTracker.track(
+                        AnalyticsEvent.DISCOVER_LIST_PODCAST_TAPPED,
+                        AnalyticsProp.sponsoredPodcastTapped(listId, podcast.uuid),
+                    )
+                }
+                if (isFeatured) {
+                    analyticsTracker.track(
+                        AnalyticsEvent.DISCOVER_FEATURED_PODCAST_TAPPED,
+                        AnalyticsProp.featuredPodcastTapped(podcast.uuid),
+                    )
+                }
             }
             holder.btnSubscribe.setOnClickListener {
+                val isFeatured = podcast.isSponsored || podcast.listId == null
                 holder.btnSubscribe.updateSubscribeButtonIcon(subscribed = true)
-                onPodcastSubscribe(podcast, null) // no analytics for carousel
+                onPodcastSubscribe(podcast, null)
 
-                FirebaseAnalyticsTracker.subscribedToFeaturedPodcast()
-                analyticsTracker.track(AnalyticsEvent.DISCOVER_FEATURED_PODCAST_SUBSCRIBED, AnalyticsProp.featuredPodcastSubscribed(podcast.uuid))
-                analyticsTracker.track(AnalyticsEvent.PODCAST_SUBSCRIBED, AnalyticsProp.podcastSubscribed(AnalyticsSource.DISCOVER, podcast.uuid))
+                if (podcast.listId != null) {
+                    val listId = podcast.listId as String
+                    analyticsTracker.track(
+                        AnalyticsEvent.DISCOVER_LIST_PODCAST_SUBSCRIBED,
+                        AnalyticsProp.sponsoredPodcastSubscribed(listId, podcast.uuid),
+                    )
+                }
+                if (isFeatured) {
+                    analyticsTracker.track(AnalyticsEvent.DISCOVER_FEATURED_PODCAST_SUBSCRIBED, AnalyticsProp.featuredPodcastSubscribed(podcast.uuid))
+                }
             }
         } else {
-            holder.podcast = null
+            holder.setPodcast(podcast = null)
         }
     }
 
     companion object {
         private object AnalyticsProp {
+            const val LIST_ID_KEY = "list_id"
             private const val PODCAST_UUID_KEY = "podcast_uuid"
-            private const val SOURCE_KEY = "source"
-            private const val UUID_KEY = "uuid"
+
+            fun sponsoredPodcastTapped(listId: String, uuid: String) = mapOf(LIST_ID_KEY to listId, PODCAST_UUID_KEY to uuid)
+            fun sponsoredPodcastSubscribed(listId: String, uuid: String) = mapOf(LIST_ID_KEY to listId, PODCAST_UUID_KEY to uuid)
             fun featuredPodcastTapped(uuid: String) = mapOf(PODCAST_UUID_KEY to uuid)
             fun featuredPodcastSubscribed(uuid: String) = mapOf(PODCAST_UUID_KEY to uuid)
-            fun podcastSubscribed(source: AnalyticsSource, uuid: String) =
-                mapOf(SOURCE_KEY to source.analyticsValue, UUID_KEY to uuid)
         }
     }
 }

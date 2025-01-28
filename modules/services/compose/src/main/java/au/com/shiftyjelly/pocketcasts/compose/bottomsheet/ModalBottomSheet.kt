@@ -3,7 +3,6 @@ package au.com.shiftyjelly.pocketcasts.compose.bottomsheet
 import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.ExperimentalMaterialApi
 import androidx.compose.material.ModalBottomSheetLayout
 import androidx.compose.material.ModalBottomSheetState
 import androidx.compose.material.ModalBottomSheetValue
@@ -21,18 +20,17 @@ import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterialApi::class)
 @Composable
 fun ModalBottomSheet(
     parent: ViewGroup,
     onExpanded: () -> Unit,
     shouldShow: Boolean,
     content: BottomSheetContentState.Content,
-) {
-    val sheetState = rememberModalBottomSheetState(
+    sheetState: ModalBottomSheetState = rememberModalBottomSheetState(
         initialValue = ModalBottomSheetValue.Hidden,
         skipHalfExpanded = true,
-    )
+    ),
+) {
     val coroutineScope = rememberCoroutineScope()
     var isSheetShown by remember { mutableStateOf(false) }
 
@@ -47,12 +45,12 @@ fun ModalBottomSheet(
                 state = BottomSheetContentState(content),
                 onDismiss = {
                     hideBottomSheet(coroutineScope, sheetState)
-                }
+                },
             )
         },
         sheetShape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp),
         scrimColor = Color.Black.copy(alpha = .25f),
-        content = {}
+        content = {},
     )
 
     LaunchedEffect(Unit) {
@@ -77,15 +75,13 @@ fun ModalBottomSheet(
     }
 }
 
-@OptIn(ExperimentalMaterialApi::class)
 private fun hideBottomSheet(coroutineScope: CoroutineScope, sheetState: ModalBottomSheetState) {
     coroutineScope.launch {
         sheetState.hide()
     }
 }
 
-@OptIn(ExperimentalMaterialApi::class)
-fun displayBottomSheet(coroutineScope: CoroutineScope, sheetState: ModalBottomSheetState) {
+private fun displayBottomSheet(coroutineScope: CoroutineScope, sheetState: ModalBottomSheetState) {
     coroutineScope.launch {
         sheetState.show()
     }

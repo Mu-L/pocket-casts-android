@@ -38,12 +38,11 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
 import au.com.shiftyjelly.pocketcasts.compose.AppThemeWithBackground
-import au.com.shiftyjelly.pocketcasts.compose.preview.ThemePreviewParameterProvider
 import au.com.shiftyjelly.pocketcasts.compose.theme
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
+import com.airbnb.android.showkase.annotation.ShowkaseComposable
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
@@ -56,29 +55,33 @@ import au.com.shiftyjelly.pocketcasts.localization.R as LR
 fun EmailAndPasswordFields(
     email: String,
     password: String,
+    emailPlaceholder: String = stringResource(LR.string.profile_email_address),
+    passwordPlaceholder: String = stringResource(LR.string.profile_password),
     showEmailError: Boolean,
     showPasswordError: Boolean,
     showPasswordErrorMessage: Boolean = showPasswordError,
     enabled: Boolean,
     isCreatingAccount: Boolean,
+    focusEnabled: Boolean = true,
     onDone: () -> Unit,
     onUpdateEmail: (String) -> Unit,
     onUpdatePassword: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
-
     val emailFocusRequester = remember { FocusRequester() }
     val passwordFocusRequester = remember { FocusRequester() }
 
     LaunchedEffect(Unit) {
-        emailFocusRequester.requestFocus()
+        if (focusEnabled) {
+            emailFocusRequester.requestFocus()
+        }
     }
 
     Column(modifier) {
-
         EmailField(
             email = email,
             isError = showEmailError,
+            placeholder = emailPlaceholder,
             enabled = enabled,
             onUpdateEmail = onUpdateEmail,
             imeAction = ImeAction.Next,
@@ -96,6 +99,7 @@ fun EmailAndPasswordFields(
         PasswordField(
             password = password,
             isError = showPasswordError,
+            placeholder = passwordPlaceholder,
             enabled = enabled,
             imeAction = ImeAction.Done,
             onImeAction = onDone,
@@ -117,7 +121,7 @@ private fun ErrorText(
     TextP40(
         text = stringResource(textRes),
         color = MaterialTheme.theme.colors.support05,
-        modifier = Modifier.padding(top = 8.dp)
+        modifier = Modifier.padding(top = 8.dp),
     )
 }
 
@@ -126,14 +130,14 @@ fun EmailField(
     email: String,
     enabled: Boolean,
     isError: Boolean,
+    placeholder: String = stringResource(LR.string.profile_email_address),
     onUpdateEmail: (String) -> Unit,
     imeAction: ImeAction = ImeAction.Next,
     onImeAction: () -> Unit,
     focusRequester: FocusRequester = remember { FocusRequester() },
     isCreatingAccount: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
-
     @Suppress("NAME_SHADOWING")
     @OptIn(ExperimentalComposeUiApi::class)
     val modifier = modifier.focusRequester(focusRequester)
@@ -141,7 +145,7 @@ fun EmailField(
 
     FormField(
         value = email,
-        placeholder = stringResource(LR.string.profile_email_address),
+        placeholder = placeholder,
         onValueChange = onUpdateEmail,
         enabled = enabled,
         isError = isError,
@@ -157,7 +161,7 @@ fun EmailField(
             keyboardType = KeyboardType.Email,
         ),
         onImeAction = onImeAction,
-        modifier = modifier
+        modifier = modifier,
     )
 }
 
@@ -166,12 +170,13 @@ fun PasswordField(
     password: String,
     enabled: Boolean,
     isError: Boolean,
+    placeholder: String = stringResource(LR.string.profile_password),
     imeAction: ImeAction = ImeAction.Done,
     onImeAction: () -> Unit,
     focusRequester: FocusRequester = remember { FocusRequester() },
     isCreatingAccount: Boolean,
     onUpdatePassword: (String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 
 ) {
     var showPassword by remember { mutableStateOf(false) }
@@ -183,7 +188,7 @@ fun PasswordField(
 
     FormField(
         value = password,
-        placeholder = stringResource(LR.string.profile_password),
+        placeholder = placeholder,
         onValueChange = onUpdatePassword,
         visualTransformation = if (showPassword) VisualTransformation.None else PasswordVisualTransformation(),
         keyboardOptions = FormFieldDefaults.keyboardOptions.copy(
@@ -203,7 +208,7 @@ fun PasswordField(
         trailingIcon = {
             val icon = if (showPassword) Icons.Filled.VisibilityOff else Icons.Filled.Visibility
             IconButton(
-                onClick = { showPassword = !showPassword }
+                onClick = { showPassword = !showPassword },
             ) {
                 Icon(
                     imageVector = icon,
@@ -211,7 +216,7 @@ fun PasswordField(
                 )
             }
         },
-        modifier = modifier
+        modifier = modifier,
     )
 }
 
@@ -249,23 +254,38 @@ private fun Modifier.autofill(
     }
 }
 
+@ShowkaseComposable(name = "EmailAndPasswordFields", group = "Form", styleName = "Light", defaultStyle = true)
+@Preview(name = "Light")
+@Composable
+fun UserPasswordFieldsLightPreview() {
+    AppThemeWithBackground(Theme.ThemeType.LIGHT) {
+        UserPasswordFieldsPreview()
+    }
+}
+
+@ShowkaseComposable(name = "EmailAndPasswordFields", group = "Form", styleName = "Dark")
+@Preview(name = "Dark")
+@Composable
+fun UserPasswordFieldsDarkPreview() {
+    AppThemeWithBackground(Theme.ThemeType.DARK) {
+        UserPasswordFieldsPreview()
+    }
+}
+
 @Preview
 @Composable
-private fun UserPasswordFieldsPreview(
-    @PreviewParameter(ThemePreviewParameterProvider::class) themeType: Theme.ThemeType,
-) {
-    AppThemeWithBackground(themeType) {
-        EmailAndPasswordFields(
-            email = "",
-            password = "",
-            showEmailError = false,
-            showPasswordError = false,
-            enabled = true,
-            onDone = {},
-            onUpdateEmail = {},
-            onUpdatePassword = {},
-            showPasswordErrorMessage = false,
-            isCreatingAccount = false,
-        )
-    }
+private fun UserPasswordFieldsPreview() {
+    EmailAndPasswordFields(
+        email = "",
+        password = "",
+        showEmailError = false,
+        showPasswordError = false,
+        enabled = true,
+        focusEnabled = false,
+        onDone = {},
+        onUpdateEmail = {},
+        onUpdatePassword = {},
+        showPasswordErrorMessage = false,
+        isCreatingAccount = false,
+    )
 }

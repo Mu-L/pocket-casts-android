@@ -1,47 +1,51 @@
 package au.com.shiftyjelly.pocketcasts.repositories.playback
 
 import android.content.Context
-import android.net.Uri
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.SurfaceView
 import android.widget.Toast
+import androidx.annotation.OptIn
+import androidx.media3.common.C
+import androidx.media3.common.PlaybackException
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.common.Tracks
+import androidx.media3.common.VideoSize
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.HttpDataSource.InvalidResponseCodeException
+import androidx.media3.exoplayer.DefaultLoadControl
+import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
+import androidx.media3.ui.WearUnsuitableOutputPlaybackSuppressionResolverListener
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
 import au.com.shiftyjelly.pocketcasts.models.to.PlaybackEffects
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.repositories.user.StatsManager
+import au.com.shiftyjelly.pocketcasts.utils.Util
+import au.com.shiftyjelly.pocketcasts.utils.featureflag.Feature
+import au.com.shiftyjelly.pocketcasts.utils.featureflag.FeatureFlag
 import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
-import com.google.android.exoplayer2.C
-import com.google.android.exoplayer2.DefaultLoadControl
-import com.google.android.exoplayer2.ExoPlayer
-import com.google.android.exoplayer2.MediaItem
-import com.google.android.exoplayer2.PlaybackException
-import com.google.android.exoplayer2.PlaybackParameters
-import com.google.android.exoplayer2.Player
-import com.google.android.exoplayer2.Tracks
-import com.google.android.exoplayer2.extractor.DefaultExtractorsFactory
-import com.google.android.exoplayer2.extractor.mp3.Mp3Extractor
-import com.google.android.exoplayer2.source.ProgressiveMediaSource
-import com.google.android.exoplayer2.source.hls.HlsMediaSource
-import com.google.android.exoplayer2.trackselection.DefaultTrackSelector
-import com.google.android.exoplayer2.upstream.DefaultDataSource
-import com.google.android.exoplayer2.upstream.DefaultHttpDataSource
-import com.google.android.exoplayer2.video.VideoSize
+import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import timber.log.Timber
-import java.io.File
-import java.util.concurrent.TimeUnit
 
-class SimplePlayer(val settings: Settings, val statsManager: StatsManager, val context: Context, override val onPlayerEvent: (au.com.shiftyjelly.pocketcasts.repositories.playback.Player, PlayerEvent) -> Unit) : LocalPlayer(onPlayerEvent) {
+class SimplePlayer(
+    val settings: Settings,
+    val statsManager: StatsManager,
+    val context: Context,
+    private val dataSourceFactory: ExoPlayerDataSourceFactory,
+    override val onPlayerEvent: (au.com.shiftyjelly.pocketcasts.repositories.playback.Player, PlayerEvent) -> Unit,
+) : LocalPlayer(onPlayerEvent) {
+    private val reducedBufferManufacturers = listOf("mercedes-benz")
+    private val useReducedBuffer = reducedBufferManufacturers.contains(Build.MANUFACTURER.lowercase()) || Util.isWearOs(context)
+    private val bufferTimeMinMillis = TimeUnit.MINUTES.toMillis(2).toInt()
+    private val bufferTimeMaxMillis = if (useReducedBuffer) TimeUnit.MINUTES.toMillis(2).toInt() else TimeUnit.MINUTES.toMillis(4).toInt()
 
-    companion object {
-        private val BUFFER_TIME_MIN_MILLIS = TimeUnit.MINUTES.toMillis(15).toInt()
-        private val BUFFER_TIME_MAX_MILLIS = BUFFER_TIME_MIN_MILLIS
-
-        // Be careful increasing the size of the back buffer. It can easily lead to OOM errors.
-        private val BACK_BUFFER_TIME_MILLIS = TimeUnit.MINUTES.toMillis(2).toInt()
-    }
+    // Be careful increasing the size of the back buffer. It can easily lead to OOM errors.
+    private val backBufferTimeMillis = if (useReducedBuffer) TimeUnit.SECONDS.toMillis(30).toInt() else TimeUnit.SECONDS.toMillis(50).toInt()
 
     private var player: ExoPlayer? = null
 
@@ -99,15 +103,18 @@ class SimplePlayer(val settings: Settings, val statsManager: StatsManager, val c
         prepare()
     }
 
+    @OptIn(UnstableApi::class)
     override fun handleStop() {
         try {
             player?.stop()
         } catch (e: Exception) {
+            LogBuffer.e(LogBuffer.TAG_PLAYBACK, e, "Play failed to stop.")
         }
 
         try {
             player?.release()
         } catch (e: Exception) {
+            LogBuffer.e(LogBuffer.TAG_PLAYBACK, e, "Play failed to release.")
         }
 
         player = null
@@ -164,20 +171,33 @@ class SimplePlayer(val settings: Settings, val statsManager: StatsManager, val c
         player?.volume = volume
     }
 
+    fun getVolume(): Float? {
+        return player?.volume
+    }
+
+    /**
+     * 1.0 represents the maximum/default volume,
+     * while 0.0 represents complete silence
+     */
+    fun restoreVolume() {
+        player?.volume = 1.0f
+    }
+
     override fun setPodcast(podcast: Podcast?) {}
 
+    @OptIn(UnstableApi::class)
     private fun prepare() {
         val trackSelector = DefaultTrackSelector(context)
 
-        val minBufferMillis = if (isStreaming) BUFFER_TIME_MIN_MILLIS else DefaultLoadControl.DEFAULT_MIN_BUFFER_MS
-        val maxBufferMillis = if (isStreaming) BUFFER_TIME_MAX_MILLIS else DefaultLoadControl.DEFAULT_MAX_BUFFER_MS
-        val backBufferMillis = if (isStreaming) BACK_BUFFER_TIME_MILLIS else DefaultLoadControl.DEFAULT_BACK_BUFFER_DURATION_MS
+        val minBufferMillis = if (isStreaming) bufferTimeMinMillis else DefaultLoadControl.DEFAULT_MIN_BUFFER_MS
+        val maxBufferMillis = if (isStreaming) bufferTimeMaxMillis else DefaultLoadControl.DEFAULT_MAX_BUFFER_MS
+        val backBufferMillis = if (isStreaming) backBufferTimeMillis else DefaultLoadControl.DEFAULT_BACK_BUFFER_DURATION_MS
         val loadControl = DefaultLoadControl.Builder()
             .setBufferDurationsMs(
                 minBufferMillis,
                 maxBufferMillis,
                 DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_MS,
-                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS
+                DefaultLoadControl.DEFAULT_BUFFER_FOR_PLAYBACK_AFTER_REBUFFER_MS,
             )
             .setBackBuffer(backBufferMillis, DefaultLoadControl.DEFAULT_RETAIN_BACK_BUFFER_FROM_KEYFRAME)
             .build()
@@ -187,9 +207,11 @@ class SimplePlayer(val settings: Settings, val statsManager: StatsManager, val c
         val player = ExoPlayer.Builder(context, renderer)
             .setTrackSelector(trackSelector)
             .setLoadControl(loadControl)
-            .setSeekForwardIncrementMs(settings.getSkipForwardInMs())
-            .setSeekBackIncrementMs(settings.getSkipBackwardInMs())
+            .setReleaseTimeoutMs(settings.getPlayerReleaseTimeOutMs())
+            .setSeekForwardIncrementMs(settings.skipForwardInSecs.value * 1000L)
+            .setSeekBackIncrementMs(settings.skipBackInSecs.value * 1000L)
             .build()
+        player.addListener(WearUnsuitableOutputPlaybackSuppressionResolverListener(context))
 
         renderer.onAudioSessionId(player.audioSessionId)
 
@@ -199,8 +221,9 @@ class SimplePlayer(val settings: Settings, val statsManager: StatsManager, val c
         setPlayerEffects()
         player.addListener(object : Player.Listener {
             override fun onTracksChanged(tracks: Tracks) {
+                episodeUuid?.let { onEpisodeChanged(it) }
                 val episodeMetadata = EpisodeFileMetadata(filenamePrefix = episodeUuid)
-                episodeMetadata.read(tracks, settings, context)
+                episodeMetadata.read(tracks, settings.artworkConfiguration.value.useEpisodeArtwork, context)
                 onMetadataAvailable(episodeMetadata)
             }
 
@@ -209,15 +232,33 @@ class SimplePlayer(val settings: Settings, val statsManager: StatsManager, val c
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
-                if (playbackState == Player.STATE_ENDED) {
-                    onCompletion()
-                } else if (playbackState == Player.STATE_READY) {
-                    onBufferingStateChanged()
-                    onDurationAvailable()
+                when (playbackState) {
+                    Player.STATE_READY -> {
+                        onBufferingStateChanged()
+                        onDurationAvailable()
+                    }
+                    Player.STATE_BUFFERING -> onBufferingStateChanged()
+                    Player.STATE_ENDED -> onCompletion()
                 }
             }
 
             override fun onPlayerError(error: PlaybackException) {
+                // Reset episode caching if 416 error response code is received
+                // https://github.com/androidx/media/issues/1032#issuecomment-1921375048
+                // https://github.com/google/ExoPlayer/issues/10577
+                // Internal ref: p1730809737477079-slack-C02A333D8LQ
+                if (FeatureFlag.isEnabled(Feature.RESET_EPISODE_CACHE_ON_416_ERROR) &&
+                    (error.cause as? InvalidResponseCodeException)?.responseCode == 416
+                ) {
+                    episodeLocation?.let {
+                        dataSourceFactory.resetEpisodeCaching(
+                            episodeLocation = it,
+                            onCachingReset = { episodeUuid -> onPlayerEvent(this@SimplePlayer, PlayerEvent.CachingReset(episodeUuid)) },
+                            onCachingComplete = { episodeUuid -> onPlayerEvent(this@SimplePlayer, PlayerEvent.CachingComplete(episodeUuid)) },
+                        )
+                    }
+                    return
+                }
                 LogBuffer.e(LogBuffer.TAG_PLAYBACK, error, "Play failed.")
                 val event = PlayerEvent.PlayerError(error.message ?: "", error)
                 this@SimplePlayer.onError(event)
@@ -226,39 +267,19 @@ class SimplePlayer(val settings: Settings, val statsManager: StatsManager, val c
 
         addVideoListener(player)
 
-        val httpDataSourceFactory = DefaultHttpDataSource.Factory()
-            .setUserAgent("Pocket Casts")
-            .setAllowCrossProtocolRedirects(true)
-        val dataSourceFactory = DefaultDataSource.Factory(context, httpDataSourceFactory)
-        val extractorsFactory = DefaultExtractorsFactory().setMp3ExtractorFlags(Mp3Extractor.FLAG_ENABLE_CONSTANT_BITRATE_SEEKING)
-        val location = episodeLocation
-        if (location == null) {
+        val episodeLocation = episodeLocation
+        if (episodeLocation == null) {
+            onError(PlayerEvent.PlayerError("No episode location found"))
+            return
+        }
+        val source = dataSourceFactory.createMediaSource(episodeLocation) {
+            onPlayerEvent(this, PlayerEvent.CachingComplete(it))
+        }
+        if (source == null) {
             onError(PlayerEvent.PlayerError("Episode has no source"))
             return
         }
 
-        val uri: Uri = when (location) {
-            is EpisodeLocation.Stream -> {
-                Uri.parse(location.uri)
-            }
-            is EpisodeLocation.Downloaded -> {
-                val filePath = location.filePath
-                if (filePath != null) {
-                    Uri.fromFile(File(filePath))
-                } else {
-                    onError(PlayerEvent.PlayerError("File has no file path"))
-                    return
-                }
-            }
-        } ?: return
-
-        val mediaItem = MediaItem.fromUri(uri)
-        val source = if (isHLS) {
-            HlsMediaSource.Factory(dataSourceFactory).createMediaSource(mediaItem)
-        } else {
-            ProgressiveMediaSource.Factory(dataSourceFactory, extractorsFactory)
-                .createMediaSource(mediaItem)
-        }
         player.setMediaSource(source)
         player.prepare()
 

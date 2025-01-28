@@ -1,22 +1,22 @@
 package au.com.shiftyjelly.pocketcasts.repositories.podcast
 
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.models.entity.Playlist
 import au.com.shiftyjelly.pocketcasts.repositories.extensions.colorIndex
 import au.com.shiftyjelly.pocketcasts.repositories.extensions.drawableId
-import timber.log.Timber
 import javax.inject.Inject
+import timber.log.Timber
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 
 class PlaylistUpdateAnalytics @Inject constructor(
-    private val analyticsTracker: AnalyticsTrackerWrapper
+    private val analyticsTracker: AnalyticsTracker,
 ) {
 
     fun update(
         playlist: Playlist,
         userPlaylistUpdate: UserPlaylistUpdate?,
-        isCreatingFilter: Boolean
+        isCreatingFilter: Boolean,
     ) {
         when {
             isCreatingFilter -> sendPlaylistCreatedEvent(playlist)
@@ -29,7 +29,6 @@ class PlaylistUpdateAnalytics @Inject constructor(
 
     private fun sendPlaylistCreatedEvent(playlist: Playlist) {
         val properties = buildMap<String, Any> {
-
             put(Key.ALL_PODCASTS, playlist.allPodcasts)
             colorAnalyticsValue(playlist)?.let {
                 put(Key.COLOR, it)
@@ -37,6 +36,10 @@ class PlaylistUpdateAnalytics @Inject constructor(
             put(Key.DOWNLOADED, playlist.downloaded)
             put(Key.NOT_DOWNLOADED, playlist.notDownloaded)
             put(Key.DURATION, playlist.filterDuration)
+            if (playlist.filterDuration) {
+                put(Key.DURATION_LONGER_THAN, playlist.longerThan)
+                put(Key.DURATION_SHORTER_THAN, playlist.shorterThan)
+            }
             put(Key.EPISODE_STATUS_IN_PROGRESS, playlist.partiallyPlayed)
             put(Key.EPISODE_STATUS_PLAYED, playlist.finished)
             put(Key.EPISODE_STATUS_UNPLAYED, playlist.unplayed)
@@ -112,11 +115,10 @@ class PlaylistUpdateAnalytics @Inject constructor(
     private fun sendPlaylistUpdateEvent(userPlaylistUpdate: UserPlaylistUpdate?) {
         userPlaylistUpdate?.properties?.map { playlistProperty ->
             when (playlistProperty) {
-
                 is FilterUpdatedEvent -> {
                     val properties = mapOf(
                         Key.GROUP to playlistProperty.groupValue,
-                        Key.SOURCE to userPlaylistUpdate.source.analyticsValue
+                        Key.SOURCE to userPlaylistUpdate.source.analyticsValue,
                     )
                     analyticsTracker.track(AnalyticsEvent.FILTER_UPDATED, properties)
                 }
@@ -124,7 +126,7 @@ class PlaylistUpdateAnalytics @Inject constructor(
                 is PlaylistProperty.AutoDownload -> {
                     val properties = mapOf(
                         Key.SOURCE to userPlaylistUpdate.source.analyticsValue,
-                        Key.ENABLED to playlistProperty.enabled
+                        Key.ENABLED to playlistProperty.enabled,
                     )
                     analyticsTracker.track(AnalyticsEvent.FILTER_AUTO_DOWNLOAD_UPDATED, properties)
                 }
@@ -148,7 +150,8 @@ class PlaylistUpdateAnalytics @Inject constructor(
 
                 PlaylistProperty.Color,
                 PlaylistProperty.FilterName,
-                PlaylistProperty.Icon -> { /* Do nothing. These are handled by the filter_edit_dismissed event. */ }
+                PlaylistProperty.Icon,
+                -> { /* Do nothing. These are handled by the filter_edit_dismissed event. */ }
             }
         }
     }
@@ -159,6 +162,8 @@ class PlaylistUpdateAnalytics @Inject constructor(
             const val COLOR = "color"
             const val DOWNLOADED = "downloaded"
             const val DURATION = "duration"
+            const val DURATION_LONGER_THAN = "duration_longer_than"
+            const val DURATION_SHORTER_THAN = "duration_shorter_than"
             const val ENABLED = "enabled"
             const val GROUP = "group"
             const val ICON_NAME = "icon_name"

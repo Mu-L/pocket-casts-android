@@ -15,12 +15,13 @@ import androidx.core.os.bundleOf
 import androidx.fragment.app.activityViewModels
 import androidx.fragment.app.viewModels
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.player.databinding.FragmentNotesBinding
 import au.com.shiftyjelly.pocketcasts.player.viewmodel.NotesViewModel
 import au.com.shiftyjelly.pocketcasts.player.viewmodel.PlayerViewModel
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
+import au.com.shiftyjelly.pocketcasts.servers.shownotes.ShowNotesState
 import au.com.shiftyjelly.pocketcasts.ui.theme.ThemeColor
 import au.com.shiftyjelly.pocketcasts.utils.extensions.toSecondsFromColonFormattedString
 import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
@@ -29,17 +30,21 @@ import au.com.shiftyjelly.pocketcasts.views.extensions.show
 import au.com.shiftyjelly.pocketcasts.views.extensions.showIf
 import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragment
 import au.com.shiftyjelly.pocketcasts.views.helper.IntentUtil
+import au.com.shiftyjelly.pocketcasts.views.helper.applyTimeLong
+import au.com.shiftyjelly.pocketcasts.views.helper.setLongStyleDate
 import dagger.hilt.android.AndroidEntryPoint
-import timber.log.Timber
 import javax.inject.Inject
+import timber.log.Timber
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @AndroidEntryPoint
 class NotesFragment : BaseFragment() {
 
     @Inject lateinit var settings: Settings
+
     @Inject lateinit var playbackManager: PlaybackManager
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
+
+    @Inject lateinit var analyticsTracker: AnalyticsTracker
 
     private val playerViewModel: PlayerViewModel by activityViewModels()
     private val viewModel: NotesViewModel by viewModels()
@@ -54,7 +59,7 @@ class NotesFragment : BaseFragment() {
         fun newInstance(episodeUuid: String): NotesFragment {
             return NotesFragment().apply {
                 arguments = bundleOf(
-                    ARG_EPISODE_UUID to episodeUuid
+                    ARG_EPISODE_UUID to episodeUuid,
                 )
             }
         }
@@ -62,14 +67,17 @@ class NotesFragment : BaseFragment() {
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         playerViewModel.playingEpisodeLive.observe(viewLifecycleOwner) {
-            viewModel.loadEpisode(it.first, it.second)
+            val (episode, backgroundColor) = it
+            viewModel.loadEpisode(episode, backgroundColor)
 
-            binding?.root?.setBackgroundColor(it.second)
-            binding?.showNotes?.setBackgroundColor(it.second)
+            binding?.root?.setBackgroundColor(backgroundColor)
+            binding?.showNotes?.setBackgroundColor(backgroundColor)
+            binding?.title?.text = episode.title
+            binding?.date?.setLongStyleDate(episode.publishedDate)
+            binding?.time?.applyTimeLong(episode.durationMs)
         }
 
         binding = FragmentNotesBinding.inflate(inflater, container, false)
-        binding?.lifecycleOwner = viewLifecycleOwner
 
         binding?.progressBar?.apply {
             setIndicatorColor(ThemeColor.playerContrast03(theme.activeTheme))
@@ -78,17 +86,16 @@ class NotesFragment : BaseFragment() {
 
         setupShowNotes()
 
-        viewModel.showNotes.observe(viewLifecycleOwner) { (notes, inProgress) ->
+        viewModel.showNotes.observe(viewLifecycleOwner) { state ->
             if (webView == null) {
                 // If the webview has crashed we need to reinitialise it or
                 // else it won't show any notes until the app is restarted
                 setupShowNotes()
             }
-            binding?.progressBar?.showIf(inProgress)
+            binding?.progressBar?.showIf(state is ShowNotesState.Loading)
+            val notes = if (state is ShowNotesState.Loaded) state.showNotes else ""
             loadShowNotes(notes)
         }
-
-        binding?.viewModel = viewModel
 
         return binding?.root
     }
@@ -116,6 +123,8 @@ class NotesFragment : BaseFragment() {
                 settings.loadsImagesAutomatically = true
                 isScrollbarFadingEnabled = false
                 isVerticalScrollBarEnabled = false
+                // stop the web view jumping after loading
+                isFocusable = false
                 setBackgroundColor(Color.TRANSPARENT)
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
@@ -149,7 +158,7 @@ class NotesFragment : BaseFragment() {
     private fun jumpToTime(timeStr: String) {
         val timeInSeconds = timeStr.toSecondsFromColonFormattedString() ?: return
 
-        Toast.makeText(context, "Skipping to $timeStr", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, getString(LR.string.skipping_to, timeStr), Toast.LENGTH_SHORT).show()
         playbackManager.seekToTimeMs((timeInSeconds * 1000))
     }
 

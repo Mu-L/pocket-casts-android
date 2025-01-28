@@ -8,8 +8,8 @@ import au.com.shiftyjelly.pocketcasts.localization.helper.tryToLocalise
 import au.com.shiftyjelly.pocketcasts.models.to.BundlePaidType
 import com.squareup.moshi.Json
 import com.squareup.moshi.JsonClass
-import kotlinx.parcelize.Parcelize
 import java.util.Date
+import kotlinx.parcelize.Parcelize
 
 interface NetworkLoadableList {
     val title: String
@@ -43,7 +43,7 @@ data class Discover(
     @field:Json(name = "regions") val regions: Map<String, DiscoverRegion>,
     @field:Json(name = "region_code_token") val regionCodeToken: String,
     @field:Json(name = "region_name_token") val regionNameToken: String,
-    @field:Json(name = "default_region_code") val defaultRegionCode: String
+    @field:Json(name = "default_region_code") val defaultRegionCode: String,
 )
 
 fun List<DiscoverRow>.transformWithRegion(region: DiscoverRegion, replacements: Map<String, String>, resources: Resources): List<DiscoverRow> {
@@ -60,9 +60,13 @@ data class DiscoverRow(
     @field:Json(name = "title") override val title: String,
     @field:Json(name = "source") override val source: String,
     @field:Json(name = "uuid") override val listUuid: String?,
+    @field:Json(name = "category_id") val categoryId: Int?,
     @field:Json(name = "regions") val regions: List<String>,
     @field:Json(name = "sponsored") val sponsored: Boolean = false,
-    @field:Json(name = "curated") override val curated: Boolean = false
+    @field:Json(name = "curated") override val curated: Boolean = false,
+    @field:Json(name = "sponsored_podcasts") val sponsoredPodcasts: List<SponsoredPodcast> = emptyList(),
+    @field:Json(name = "popular") val mostPopularCategoriesId: List<Int>?,
+    val regionCode: String? = null,
 ) : NetworkLoadableList {
 
     override fun transformWithReplacements(replacements: Map<String, String>, resources: Resources): DiscoverRow {
@@ -83,9 +87,31 @@ data class DiscoverRow(
 
         newExpandedTopItemLabel = newExpandedTopItemLabel?.tryToLocalise(resources)
 
-        return DiscoverRow(id, type, displayStyle, expandedStyle, newExpandedTopItemLabel, newTitle, newSource, listUuid, regions, sponsored, curated)
+        return DiscoverRow(
+            id = id,
+            type = type,
+            displayStyle = displayStyle,
+            expandedStyle = expandedStyle,
+            expandedTopItemLabel = newExpandedTopItemLabel,
+            title = newTitle,
+            source = newSource,
+            listUuid = listUuid,
+            regions = regions,
+            sponsored = sponsored,
+            curated = curated,
+            categoryId = categoryId,
+            sponsoredPodcasts = sponsoredPodcasts,
+            mostPopularCategoriesId = mostPopularCategoriesId,
+        )
     }
 }
+
+@Parcelize
+@JsonClass(generateAdapter = true)
+data class SponsoredPodcast(
+    @field:Json(name = "position") val position: Int?,
+    @field:Json(name = "source") val source: String?,
+) : Parcelable
 
 @JsonClass(generateAdapter = true)
 data class ListFeed(
@@ -104,7 +130,8 @@ data class ListFeed(
     @field:Json(name = "promotion") var promotion: DiscoverPromotion?,
     @field:Json(name = "payment") val payment: ListPayment? = null,
     @field:Json(name = "paid") val paid: Boolean? = false,
-    @field:Json(name = "author") val author: String? = null
+    @field:Json(name = "author") val author: String? = null,
+    @field:Json(name = "list_id") val listId: String? = null,
 ) {
     val displayList: List<Any>
         get() {
@@ -120,7 +147,7 @@ data class ListFeed(
 data class ListPayment(
     @field:Json(name = "bundle_uuid") val bundleUuid: String,
     @field:Json(name = "url") val paymentUrl: String,
-    @field:Json(name = "paid_type") val paidTypeRaw: String
+    @field:Json(name = "paid_type") val paidTypeRaw: String,
 ) {
     val paidType: BundlePaidType
         get() = BundlePaidType.valueOf(paidTypeRaw.uppercase())
@@ -130,14 +157,14 @@ data class ListPayment(
 @JsonClass(generateAdapter = true)
 data class DiscoverFeedImage(
     @field:Json(name = "key") val key: String,
-    @field:Json(name = "image_url") val imageUrl: String
+    @field:Json(name = "image_url") val imageUrl: String,
 ) : Parcelable
 
 @Parcelize
 @JsonClass(generateAdapter = true)
 data class DiscoverFeedTintColors(
     @field:Json(name = "onLightBackground") val lightTintColor: String,
-    @field:Json(name = "onDarkBackground") val darkTintColor: String
+    @field:Json(name = "onDarkBackground") val darkTintColor: String,
 ) : Parcelable {
     fun tintColorInt(isDarkTheme: Boolean): Int? {
         return if (isDarkTheme) {
@@ -168,7 +195,9 @@ data class DiscoverPodcast(
     @field:Json(name = "language") val language: String?,
     @field:Json(name = "media_type") val mediaType: String?,
     val isSubscribed: Boolean = false,
-    @ColorInt var color: Int = 0
+    val isSponsored: Boolean = false,
+    val listId: String? = null, // for carousel sponsored podcast
+    @ColorInt var color: Int = 0,
 ) : Parcelable {
     fun updateIsSubscribed(value: Boolean): DiscoverPodcast {
         return copy(isSubscribed = value)
@@ -200,7 +229,7 @@ data class DiscoverPromotion(
     @field:Json(name = "podcast_uuid") val podcastUuid: String,
     @field:Json(name = "title") val title: String,
     @field:Json(name = "description") val description: String,
-    var isSubscribed: Boolean = false
+    var isSubscribed: Boolean = false,
 ) : Parcelable
 
 @Parcelize
@@ -208,7 +237,7 @@ data class DiscoverPromotion(
 data class DiscoverRegion(
     @field:Json(name = "name") val name: String,
     @field:Json(name = "flag") val flag: String,
-    @field:Json(name = "code") val code: String
+    @field:Json(name = "code") val code: String,
 ) : Parcelable
 
 @JsonClass(generateAdapter = true)
@@ -217,12 +246,15 @@ data class DiscoverCategory(
     @field:Json(name = "name") val name: String,
     @field:Json(name = "icon") val icon: String,
     @field:Json(name = "source") override val source: String,
-    override val curated: Boolean = false
+    override val curated: Boolean = false,
 ) : NetworkLoadableList {
+    companion object {
+        const val ALL_CATEGORIES_ID = -99
+    }
     override val title: String
         get() = name
     override val type: ListType
-        get() = ListType.PodcastList()
+        get() = ListType.PodcastList
     override val displayStyle: DisplayStyle
         get() = DisplayStyle.SmallList()
     override val expandedStyle: ExpandedStyle

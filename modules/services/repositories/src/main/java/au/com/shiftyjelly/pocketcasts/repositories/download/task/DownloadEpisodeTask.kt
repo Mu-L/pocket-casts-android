@@ -1,17 +1,21 @@
 package au.com.shiftyjelly.pocketcasts.repositories.download.task
 
 import android.content.Context
+import android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
 import android.media.MediaExtractor
 import android.media.MediaFormat
+import android.os.Build
 import android.system.ErrnoException
 import android.system.OsConstants
+import android.util.Log
 import androidx.hilt.work.HiltWorker
 import androidx.work.Data
 import androidx.work.ForegroundInfo
 import androidx.work.Worker
 import androidx.work.WorkerParameters
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.analytics.EpisodeDownloadError
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.entity.UserEpisode
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeStatusEnum
 import au.com.shiftyjelly.pocketcasts.preferences.Settings.NotificationId
@@ -21,23 +25,15 @@ import au.com.shiftyjelly.pocketcasts.repositories.download.ResponseValidationRe
 import au.com.shiftyjelly.pocketcasts.repositories.download.toData
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.UserEpisodeManager
+import au.com.shiftyjelly.pocketcasts.servers.di.Downloads
 import au.com.shiftyjelly.pocketcasts.utils.FileUtil
+import au.com.shiftyjelly.pocketcasts.utils.Network
 import au.com.shiftyjelly.pocketcasts.utils.extensions.anyMessageContains
 import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
 import dagger.assisted.Assisted
 import dagger.assisted.AssistedInject
 import io.reactivex.Observable
 import io.reactivex.ObservableEmitter
-import kotlinx.coroutines.runBlocking
-import kotlinx.coroutines.rx2.await
-import okhttp3.Call
-import okhttp3.Dispatcher
-import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
-import okhttp3.MediaType
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
-import timber.log.Timber
 import java.io.BufferedReader
 import java.io.File
 import java.io.FileInputStream
@@ -51,8 +47,22 @@ import java.io.RandomAccessFile
 import java.net.SocketException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
-import java.util.concurrent.TimeUnit
+import javax.inject.Provider
 import javax.net.ssl.SSLHandshakeException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlin.coroutines.suspendCoroutine
+import kotlin.time.DurationUnit
+import kotlin.time.TimeSource
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.rx2.await
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
+import okhttp3.MediaType
+import okhttp3.Request
+import okhttp3.Response
+import timber.log.Timber
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 private class UnderscoreInHostName : Exception("Download URL is invalid, as it contains an underscore in the hostname. Please contact the podcast author to resolve this.")
@@ -63,7 +73,9 @@ class DownloadEpisodeTask @AssistedInject constructor(
     @Assisted params: WorkerParameters,
     var downloadManager: DownloadManager,
     var episodeManager: EpisodeManager,
-    var userEpisodeManager: UserEpisodeManager
+    var userEpisodeManager: UserEpisodeManager,
+    @Downloads private val callFactory: Call.Factory,
+    @Downloads private val requestBuilderProvider: Provider<Request.Builder>,
 ) : Worker(context, params) {
 
     companion object {
@@ -98,52 +110,47 @@ class DownloadEpisodeTask @AssistedInject constructor(
         const val OUTPUT_CANCELLED = "cancelled"
     }
 
-    private lateinit var episode: Playable
+    private lateinit var episode: BaseEpisode
     private val episodeUUID: String? = inputData.getString(INPUT_EPISODE_UUID)
     private val pathToSaveTo: String? = inputData.getString(INPUT_PATH_TO_SAVE_TO)
     private val tempDownloadPath: String? = inputData.getString(INPUT_TEMP_PATH)
 
     private var bytesDownloadedSoFar: Long = 0
     private var bytesRemaining: Long = 0
-
-    private val okHttpClient by lazy {
-        val dispatcher = Dispatcher()
-        dispatcher.maxRequestsPerHost = 5
-        val builder = OkHttpClient.Builder()
-            .dispatcher(dispatcher)
-            .connectTimeout(30, TimeUnit.SECONDS)
-            .writeTimeout(30, TimeUnit.SECONDS)
-            .readTimeout(30, TimeUnit.SECONDS)
-
-        builder.build()
-    }
+    private val episodeDownloadError = EpisodeDownloadError(episodeUuid = episodeUUID.orEmpty())
+    private val timeSource = TimeSource.Monotonic
+    private val startTimestamp = timeSource.markNow()
 
     override fun doWork(): Result {
         if (isStopped) {
             LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Cancelling execution of $episodeUUID download because we are already stopped")
-            return Result.failure()
+            return Result.failure(failureData())
         }
 
         val outputData = Data.Builder().putString(OUTPUT_EPISODE_UUID, episodeUUID).build()
 
         return try {
-            this.episode = runBlocking { episodeManager.findPlayableByUuid(episodeUUID!!) } ?: return Result.failure()
+            this.episode = runBlocking { episodeManager.findEpisodeByUuid(episodeUUID!!) } ?: return Result.failure()
+            episodeDownloadError.podcastUuid = episode.podcastOrSubstituteUuid
 
             if (this.episode.downloadTaskId != id.toString()) {
-                LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, "Mismatched download task id for episode ${episode.title}. Cancelling.")
-                return Result.failure()
+                LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, "Mismatched download task id for episode ${episode.title}. Cancelling. downloadTaskId: ${this.episode.downloadTaskId} id: $id.")
+                episodeDownloadError.reason = EpisodeDownloadError.Reason.TaskIdMismatch
+                return Result.failure(failureData())
             }
 
             if (this.episode.isArchived) {
                 // In case the episode was archived again but the cancellation event hasn't come through yet
-                LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, "Episode ${episode.title} is archived in download task. Cancelling.")
+                LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Episode ${episode.title} is archived in download task. Cancelling.")
                 return Result.success(Data.Builder().putBoolean(OUTPUT_CANCELLED, true).build())
             }
 
             LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Worker Downloading episode ${episode.title} ${episode.uuid}")
             setForegroundAsync(createForegroundInfo())
 
-            episodeManager.updateEpisodeStatus(episode, EpisodeStatusEnum.DOWNLOADING)
+            runBlocking {
+                episodeManager.updateEpisodeStatus(episode, EpisodeStatusEnum.DOWNLOADING)
+            }
 
             download()
                 .doOnNext { updateProgress(it) }
@@ -152,8 +159,10 @@ class DownloadEpisodeTask @AssistedInject constructor(
 
             if (!isStopped) {
                 pathToSaveTo?.let {
-                    episodeManager.updateDownloadFilePath(episode, it, false)
-                    episodeManager.updateEpisodeStatus(episode, EpisodeStatusEnum.DOWNLOADED)
+                    episodeManager.updateDownloadFilePathBlocking(episode, it, false)
+                    runBlocking {
+                        episodeManager.updateEpisodeStatus(episode, EpisodeStatusEnum.DOWNLOADED)
+                    }
                 }
 
                 LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Downloaded episode ${episode.title} ${episode.uuid}")
@@ -166,13 +175,12 @@ class DownloadEpisodeTask @AssistedInject constructor(
             val downloadException = e.cause as? DownloadFailed
             if (isStopped) {
                 LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Downloaded stopped ${episode.title} ${episode.uuid} - ${e.message}")
-                Result.failure() // Don't do anything because it's already been handled outside of the task
+                Result.failure(failureData()) // Don't do anything because it's already been handled outside of the task
             } else if (downloadException != null && downloadException.retry && runAttemptCount < MAX_RETRIES) {
                 markAsRetry(e)
                 Result.retry()
             } else {
-                val errorOutputData = markAsFailed(e)
-                Result.failure(errorOutputData)
+                Result.failure(failureData(e))
             }
         }
     }
@@ -185,30 +193,43 @@ class DownloadEpisodeTask @AssistedInject constructor(
         val notification = downloadManager.getNotificationBuilder()
             .build()
 
-        return ForegroundInfo(NotificationId.DOWNLOADING.value, notification)
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            ForegroundInfo(
+                NotificationId.DOWNLOADING.value,
+                notification,
+                FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+        } else {
+            ForegroundInfo(NotificationId.DOWNLOADING.value, notification)
+        }
     }
 
     private fun markAsRetry(e: Exception? = null) {
         runBlocking {
             val requirements = downloadManager.getRequirementsAndSetStatusAsync(episode)
             val message = e?.toString() ?: "No exception"
-            LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, "Download stopped, will retry with $requirements ${episode.title} ${episode.uuid} - $message")
+            LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Download stopped, will retry with $requirements ${episode.title} ${episode.uuid} - $message")
         }
     }
 
-    private fun markAsFailed(e: Exception): Data {
-        val downloadMessage = (e.cause as? DownloadFailed)?.message
+    private fun failureData(e: Exception? = null): Data {
+        val downloadMessage = (e?.cause as? DownloadFailed)?.message
+        episodeDownloadError.taskDuration = (timeSource.markNow() - startTimestamp).toLong(DurationUnit.MILLISECONDS)
+        episodeDownloadError.isCellular = Network.isCellularConnection(context)
+        episodeDownloadError.isProxy = Network.isVpnConnection(context)
 
         val outputData = Data.Builder()
-            .putString(OUTPUT_ERROR_MESSAGE, downloadMessage ?: e.message)
-            .putString(OUTPUT_EPISODE_UUID, episode.uuid)
+            .putString(OUTPUT_ERROR_MESSAGE, downloadMessage ?: e?.message)
+            .putAll(episodeDownloadError.toProperties())
             .build()
 
-        episodeManager.updateEpisodeStatus(episode, EpisodeStatusEnum.DOWNLOAD_FAILED)
+        runBlocking {
+            episodeManager.updateEpisodeStatus(episode, EpisodeStatusEnum.DOWNLOAD_FAILED)
+        }
         val message = if (downloadMessage.isNullOrBlank()) "Download Failed" else downloadMessage
-        episodeManager.updateDownloadErrorDetails(episode, message)
+        episodeManager.updateDownloadErrorDetailsBlocking(episode, message)
 
-        LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, e, "Download failed ${episode.title} ${episode.uuid} - $message")
+        LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Download failed ${episode.title} ${episode.uuid} - $message")
 
         return outputData
     }
@@ -217,7 +238,10 @@ class DownloadEpisodeTask @AssistedInject constructor(
         return Observable.create { emitter ->
             try {
                 // check to see if they've already downloaded the full file
-                val path = pathToSaveTo ?: throw Exception("Download episode path not set.")
+                val path = pathToSaveTo ?: run {
+                    episodeDownloadError.reason = EpisodeDownloadError.Reason.NoSavePath
+                    throw Exception("Download episode path not set.")
+                }
                 val fullDownloadFile = File(path)
                 if (fullDownloadFile.exists() && fullDownloadFile.length() > 0) {
                     // don't try to get the files duration as in rare cases the mp3 extractor can fatally crash the app
@@ -225,7 +249,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
                         emitter.onComplete()
                     }
                 } else {
-                    downloadFile(tempDownloadPath!!, okHttpClient, 1, emitter)
+                    downloadFile(tempDownloadPath!!, emitter)
                     if (!emitter.isDisposed) {
                         emitter.onComplete()
                     }
@@ -240,7 +264,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
         }
     }
 
-    private fun downloadFile(tempDownloadPath: String, httpClient: OkHttpClient, tryCount: Int, emitter: ObservableEmitter<DownloadProgressUpdate>) {
+    private fun downloadFile(tempDownloadPath: String, emitter: ObservableEmitter<DownloadProgressUpdate>) {
         if (emitter.isDisposed || isStopped || pathToSaveTo == null) {
             return
         }
@@ -258,15 +282,19 @@ class DownloadEpisodeTask @AssistedInject constructor(
         try {
             var downloadUrl = episode.downloadUrl?.toHttpUrlOrNull()
             if (downloadUrl == null && episode is UserEpisode) {
-                downloadUrl = runBlocking { userEpisodeManager.getPlaybackUrl(episode).await()?.toHttpUrlOrNull() }
+                downloadUrl = runBlocking { userEpisodeManager.getPlaybackUrlRxSingle(episode).await()?.toHttpUrlOrNull() }
             }
 
-            if (downloadUrl == null) throw IllegalStateException("Episode is missing url to download")
+            if (downloadUrl == null) {
+                episodeDownloadError.reason = EpisodeDownloadError.Reason.MalformedHost
+                throw IllegalStateException("Episode is missing url to download")
+            }
             if (downloadUrl.host.contains("_")) {
+                episodeDownloadError.reason = EpisodeDownloadError.Reason.MalformedHost
                 throw UnderscoreInHostName()
             }
 
-            val requestBuilder = Request.Builder()
+            val requestBuilder = requestBuilderProvider.get()
                 .url(downloadUrl)
                 .header("User-Agent", "Pocket Casts")
 
@@ -290,8 +318,8 @@ class DownloadEpisodeTask @AssistedInject constructor(
                     .header("Range", "bytes=$localFileSize-")
                     .header("Accept-Encoding", "identity")
                     .build()
-                call = httpClient.newCall(request)
-                response = call.execute()
+                call = callFactory.newCall(request)
+                response = call.blockingEnqueue()
 
                 if (response.code != HTTP_RESUME_SUPPORTED) {
                     LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Resuming ${episode.title} not supported, restarting download.")
@@ -309,8 +337,8 @@ class DownloadEpisodeTask @AssistedInject constructor(
 
             if (response == null) {
                 val request = requestBuilder.build()
-                call = httpClient.newCall(request)
-                response = call.execute()
+                call = callFactory.newCall(request)
+                response = call.blockingEnqueue()
             }
 
             if (emitter.isDisposed || isStopped) {
@@ -332,20 +360,15 @@ class DownloadEpisodeTask @AssistedInject constructor(
             }
 
             val validationResult = validateResponse(response)
-            if (validationResult.isAlternateUrlFound) {
-                return downloadFile(tempDownloadPath, httpClient, tryCount, emitter)
-            }
-
             if (!validationResult.isValid) {
                 call?.cancel()
                 if (!emitter.isDisposed) {
                     emitter.onError(
                         DownloadFailed(
-                            null,
-                            validationResult.errorMessage
-                                ?: "",
-                            false
-                        )
+                            exception = null,
+                            message = validationResult.errorMessage.orEmpty(),
+                            retry = false,
+                        ),
                     )
                 }
                 return
@@ -355,20 +378,14 @@ class DownloadEpisodeTask @AssistedInject constructor(
                 bytesRemaining = body.contentLength()
                 if (bytesRemaining <= 0) {
                     // okhttp can return -1 if unknown so try to find it manually
-                    val contentLength = response.header("Content-Length", null)
-                    if (contentLength != null) {
-                        try {
-                            bytesRemaining = java.lang.Long.parseLong(contentLength)
-                        } catch (nfe: NumberFormatException) {
-                        }
-                    }
+                    bytesRemaining = response.header("Content-Length", null)?.toLongOrNull() ?: 0L
                 }
+                episodeDownloadError.expectedContentLength = bytesRemaining
                 val contentType = body.contentType()
 
                 // basic sanity checks to make sure the file looks big enough and it's content type isn't text
-                if (bytesRemaining > 0 && bytesRemaining < BAD_EPISODE_SIZE || bytesRemaining > 0 && bytesRemaining < SUSPECT_EPISODE_SIZE && contentType != null && contentType.toString()
-                    .lowercase().contains("text")
-                ) {
+                if (bytesRemaining in 1..<BAD_EPISODE_SIZE || bytesRemaining in 1..<SUSPECT_EPISODE_SIZE && contentType?.toString().orEmpty().contains("text", ignoreCase = true)) {
+                    episodeDownloadError.reason = EpisodeDownloadError.Reason.SuspiciousContent
                     if (!emitter.isDisposed) {
                         emitter.onError(DownloadFailed(FileNotFoundException(), "File not found. The podcast author may have moved or deleted this episode file.", false))
                     }
@@ -385,6 +402,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
                         var lastReportedProgressTime = System.currentTimeMillis()
                         val buffer = ByteArray(8192)
                         bytesDownloadedSoFar = localFileSize
+                        episodeDownloadError.responseBodyBytesReceived = bytesDownloadedSoFar
 
                         var bytes = inputStream.read(buffer)
                         while (bytes >= 0) {
@@ -396,6 +414,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
                             }
 
                             bytesDownloadedSoFar += bytes.toLong()
+                            episodeDownloadError.responseBodyBytesReceived = bytesDownloadedSoFar
                             bytesRemaining -= bytes.toLong()
                             if (System.currentTimeMillis() - lastReportedProgressTime > MIN_TIME_BETWEEN_UPDATE_REPORTS) {
                                 try {
@@ -415,6 +434,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
                         // check to see the file on the file system is the right size
                         val bytesRequired = bytesRemaining + localFileSize
                         if (bytesRemaining > 0 && bytesRequired > tempDownloadFile.length()) {
+                            episodeDownloadError.reason = EpisodeDownloadError.Reason.PartialDownload
                             if (!emitter.isDisposed) {
                                 emitter.onError(DownloadFailed(null, "Download failed, only part of the episode was downloaded", true))
                             }
@@ -425,8 +445,10 @@ class DownloadEpisodeTask @AssistedInject constructor(
                     tempDownloadMetaDataFile.delete() // at this point we have the file, don't need the metadata about it anymore
                     val fullDownloadFile = File(pathToSaveTo)
                     try {
-                        FileUtil.copyFile(tempDownloadFile, fullDownloadFile)
+                        episodeDownloadError.fileSize = tempDownloadFile.length()
+                        FileUtil.copy(tempDownloadFile, fullDownloadFile)
                     } catch (exception: IOException) {
+                        episodeDownloadError.reason = EpisodeDownloadError.Reason.StorageIssue
                         LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, exception, "Could not move download temp ${tempDownloadFile.path} to $pathToSaveTo. SavePathFileExists: ${fullDownloadFile.exists()}")
 
                         // the move failed, so delete the temp file
@@ -443,7 +465,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
                     tempDownloadFile.delete()
 
                     if (episode.sizeInBytes != fullDownloadFile.length()) {
-                        episodeManager.updateSizeInBytes(episode, fullDownloadFile.length())
+                        episodeManager.updateSizeInBytesBlocking(episode, fullDownloadFile.length())
                     }
 
                     if (!emitter.isDisposed) {
@@ -455,6 +477,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
                 }
             }
         } catch (e: SocketTimeoutException) {
+            episodeDownloadError.reason = EpisodeDownloadError.Reason.ConnectionTimeout
             exception = e
             errorMessage = createErrorMessage(e, "The podcast author's server timed out.")
             retry = true
@@ -471,16 +494,20 @@ class DownloadEpisodeTask @AssistedInject constructor(
         } catch (e: SocketException) {
             exception = e
             errorMessage = if (e.anyMessageContains("chtbl.com")) {
+                episodeDownloadError.reason = EpisodeDownloadError.Reason.ChartableBlocked
                 context.resources.getString(LR.string.error_chartable)
             } else {
+                episodeDownloadError.reason = EpisodeDownloadError.Reason.SocketIssue
                 createErrorMessage(e)
             }
             retry = true
         } catch (e: UnknownHostException) {
+            episodeDownloadError.reason = EpisodeDownloadError.Reason.UnknownHost
             exception = e
             errorMessage = ERROR_NO_INTERNET_CONNECTION
             retry = true
         } catch (e: SSLHandshakeException) {
+            episodeDownloadError.reason = EpisodeDownloadError.Reason.NoSSl
             exception = e
             errorMessage = ERROR_SSL_HANDSHAKE
             retry = true
@@ -495,6 +522,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
             if (e.cause is ErrnoException) {
                 val erroNo = (e.cause as ErrnoException).errno
                 if (erroNo == OsConstants.ENOSPC) {
+                    episodeDownloadError.reason = EpisodeDownloadError.Reason.NotEnoughStorage
                     errorMessage = ERROR_NO_SPACE_LEFT
                     retry = false
                 }
@@ -507,7 +535,9 @@ class DownloadEpisodeTask @AssistedInject constructor(
             call?.cancel()
         }
         if (exception != null) {
-            LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, exception, "Download failed %s", this.episode.downloadUrl ?: "")
+            // don't report issues such as timeouts to Sentry
+            val logPriority = if (exception is IOException) Log.INFO else Log.ERROR
+            LogBuffer.addLog(logPriority, LogBuffer.TAG_BACKGROUND_TASKS, exception, "Download failed %s", this.episode.downloadUrl ?: "")
         }
 
         if (!emitter.isDisposed) {
@@ -547,7 +577,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
                 }
 
                 val durationInSecs = (duration / 1000000).toDouble()
-                episodeManager.updateDuration(episode, durationInSecs, true)
+                episodeManager.updateDurationBlocking(episode, durationInSecs, true)
 
                 return
             }
@@ -559,7 +589,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
     private fun fixInvalidContentType(contentType: MediaType?) {
         contentType ?: return
         if ((episode.fileType.isNullOrBlank() && (contentType.type == "audio" || contentType.type == "video")) || contentType.type == "video") {
-            episodeManager.updateFileType(episode, contentType.toString())
+            episodeManager.updateFileTypeBlocking(episode, contentType.toString())
             episode.fileType = contentType.toString()
         }
     }
@@ -567,18 +597,28 @@ class DownloadEpisodeTask @AssistedInject constructor(
     private fun validateResponse(response: Response): ResponseValidationResult {
         // check for a valid status code
         val statusCode = response.code
+        episodeDownloadError.httpStatusCode = statusCode
+        episodeDownloadError.contentType = response.header("Content-Type") ?: "Missing"
+        episodeDownloadError.tlsCipherSuite = response.handshake?.cipherSuite?.javaName?.uppercase().orEmpty()
         if (statusCode in 400..599) {
             val responseReason = response.message
-            val message = if (statusCode == 404) ERROR_FILE_NOT_FOUND else String.format(
-                ERROR_DOWNLOAD_MESSAGE, if (responseReason.isBlank()) "" else "(error $statusCode $responseReason)"
-            )
-            LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, "Invalid response returned for episode download. ${response.code} $responseReason ${response.request.url}")
+            val message = if (statusCode == 404) {
+                ERROR_FILE_NOT_FOUND
+            } else {
+                String.format(
+                    ERROR_DOWNLOAD_MESSAGE,
+                    if (responseReason.isBlank()) "" else "(error $statusCode $responseReason)",
+                )
+            }
+            LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Invalid response returned for episode download. ${response.code} $responseReason ${response.request.url}")
+            episodeDownloadError.reason = EpisodeDownloadError.Reason.StatusCode
             return ResponseValidationResult(isValid = false, errorMessage = message)
         }
         // check the content type is valid
         response.header("Content-Type")?.let { contentType ->
             if (INVALID_CONTENT_TYPES.any { it == contentType }) {
-                LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, "Invalid content type returned for episode download. $contentType ${response.request.url}")
+                LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Invalid content type returned for episode download. $contentType ${response.request.url}")
+                episodeDownloadError.reason = EpisodeDownloadError.Reason.ContentType
                 return ResponseValidationResult(isValid = false, errorMessage = ERROR_FAILED_EPISODE)
             }
         }
@@ -599,7 +639,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
 
         val progress = bytesDownloadedSoFar.toFloat() / totalSize
         val total = bytesRemaining + bytesDownloadedSoFar
-        val podcastUuid = (episode as? Episode)?.podcastUuid
+        val podcastUuid = (episode as? PodcastEpisode)?.podcastUuid
 
         return DownloadProgressUpdate(
             episode.uuid,
@@ -607,7 +647,7 @@ class DownloadEpisodeTask @AssistedInject constructor(
             null,
             progress,
             bytesDownloadedSoFar,
-            total
+            total,
         )
     }
 
@@ -643,3 +683,22 @@ class DownloadEpisodeTask @AssistedInject constructor(
 
     class DownloadFailed(val exception: Exception?, message: String, val retry: Boolean) : Exception(message)
 }
+
+/**
+ * Have to use enqueue for high bandwidth requests on the watch app
+ * See https://github.com/google/horologist/blob/7bd044a4766e379f85ee3f5a01272853eec3155d/network-awareness/src/main/java/com/google/android/horologist/networks/okhttp/impl/HighBandwidthCall.kt#L93-L92
+ */
+private fun Call.blockingEnqueue(): Response =
+    runBlocking {
+        suspendCoroutine { cont ->
+            this@blockingEnqueue.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    cont.resumeWithException(e)
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    cont.resume(response)
+                }
+            })
+        }
+    }

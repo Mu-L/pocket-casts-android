@@ -17,12 +17,17 @@ abstract class BasePreferenceFragment : PreferenceFragmentCompat() {
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
-        savedInstanceState: Bundle?
+        savedInstanceState: Bundle?,
     ): View {
         val root = super.onCreateView(inflater, container, savedInstanceState) as ViewGroup
         progressBar = createProgressBar()
         root.addView(progressBar)
         return root
+    }
+
+    override fun onDestroyView() {
+        progressBar = null
+        super.onDestroyView()
     }
 
     fun showLoading() {
@@ -40,7 +45,7 @@ abstract class BasePreferenceFragment : PreferenceFragmentCompat() {
             isIndeterminate = true
             layoutParams = FrameLayout.LayoutParams(
                 24.dpToPx(requireContext()),
-                24.dpToPx(requireContext())
+                24.dpToPx(requireContext()),
             ).apply {
                 gravity = Gravity.CENTER
             }

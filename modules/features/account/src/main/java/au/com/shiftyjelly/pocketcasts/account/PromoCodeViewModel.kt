@@ -5,11 +5,11 @@ import android.content.res.Resources
 import androidx.annotation.DrawableRes
 import androidx.lifecycle.MutableLiveData
 import androidx.lifecycle.ViewModel
-import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.repositories.subscription.SubscriptionManager
+import au.com.shiftyjelly.pocketcasts.repositories.sync.SyncManager
 import au.com.shiftyjelly.pocketcasts.servers.sync.PromoCodeResponse
-import au.com.shiftyjelly.pocketcasts.servers.sync.SyncServerManager
 import au.com.shiftyjelly.pocketcasts.servers.sync.parseErrorResponse
+import com.squareup.moshi.Moshi
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.reactivex.BackpressureStrategy
 import io.reactivex.Single
@@ -17,14 +17,14 @@ import io.reactivex.android.schedulers.AndroidSchedulers
 import io.reactivex.disposables.Disposable
 import io.reactivex.functions.Function
 import io.reactivex.schedulers.Schedulers
-import retrofit2.HttpException
 import javax.inject.Inject
+import retrofit2.HttpException
 
 @HiltViewModel
 class PromoCodeViewModel @Inject constructor(
-    private val syncServerManager: SyncServerManager,
-    private val settings: Settings,
-    private val subscriptionManager: SubscriptionManager
+    private val syncManager: SyncManager,
+    private val subscriptionManager: SubscriptionManager,
+    private val moshi: Moshi,
 ) : ViewModel() {
     sealed class ViewState {
         object Loading : ViewState()
@@ -37,22 +37,22 @@ class PromoCodeViewModel @Inject constructor(
     val state: MutableLiveData<ViewState> = MutableLiveData(ViewState.Loading)
 
     fun setup(code: String, context: Context) {
-        val signedInFlow = Single.defer<ViewState> { syncServerManager.redeemPromoCode(code).map { ViewState.Success(it) } }
+        val signedInFlow = Single.defer<ViewState> { syncManager.redeemPromoCodeRxSingle(code).map { ViewState.Success(it) } }
             .flatMap { viewState ->
-                subscriptionManager.getSubscriptionStatus(allowCache = false).map { viewState } // Force reloading of the new subscription status
+                subscriptionManager.getSubscriptionStatusRxSingle(allowCache = false).map { viewState } // Force reloading of the new subscription status
             }
             .observeOn(AndroidSchedulers.mainThread())
             .onErrorReturn(errorHandler(isSignedIn = true, resources = context.resources))
             .toFlowable()
 
-        val signedOutFlow = syncServerManager.validatePromoCode(code)
+        val signedOutFlow = syncManager.validatePromoCodeRxSingle(code)
             .observeOn(AndroidSchedulers.mainThread())
             .map<ViewState> { ViewState.NotSignedIn(it) }
             .onErrorReturn(errorHandler(isSignedIn = false, resources = context.resources))
             .toFlowable()
 
         disposable?.dispose()
-        disposable = settings.isLoggedInObservable.toFlowable(BackpressureStrategy.LATEST)
+        disposable = syncManager.isLoggedInObservable.toFlowable(BackpressureStrategy.LATEST)
             .observeOn(Schedulers.io())
             .takeUntil { it } // Once we are signed in we don't want to be notified for other changes to the account like being upgraded to plus
             .switchMap { signedIn ->
@@ -78,7 +78,7 @@ class PromoCodeViewModel @Inject constructor(
         return Function {
             when (it) {
                 is HttpException -> {
-                    val errorResponse = it.parseErrorResponse()
+                    val errorResponse = it.parseErrorResponse(moshi)
                     var message = errorResponse?.messageLocalized(resources) ?: "Unknown error"
                     if (it.code() == 404) {
                         message = if (isSignedIn) {

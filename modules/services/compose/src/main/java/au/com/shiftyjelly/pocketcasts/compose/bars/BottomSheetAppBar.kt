@@ -1,15 +1,16 @@
 package au.com.shiftyjelly.pocketcasts.compose.bars
 
-import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.material.AppBarDefaults
 import androidx.compose.material.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.tooling.preview.Preview
-import androidx.compose.ui.tooling.preview.PreviewParameter
-import au.com.shiftyjelly.pocketcasts.compose.AppTheme
-import au.com.shiftyjelly.pocketcasts.compose.preview.ThemePreviewParameterProvider
+import au.com.shiftyjelly.pocketcasts.compose.AppThemeWithBackground
 import au.com.shiftyjelly.pocketcasts.compose.theme
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
+import com.airbnb.android.showkase.annotation.ShowkaseComposable
 
 /**
  * A styled App Bar that works in a Bottom Sheet component. It keeps the page background one color.
@@ -18,27 +19,45 @@ import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 fun BottomSheetAppBar(
     title: String? = null,
     navigationButton: NavigationButton = NavigationButton.Back,
-    actions: @Composable RowScope.() -> Unit = {},
-    onNavigationClick: () -> Unit
+    windowInsets: WindowInsets = AppBarDefaults.topAppBarWindowInsets,
+    actions: @Composable RowScope.(Color) -> Unit = {},
+    onNavigationClick: () -> Unit,
 ) {
     ThemedTopAppBar(
         title = title,
         iconColor = MaterialTheme.theme.colors.primaryIcon01,
         textColor = MaterialTheme.theme.colors.primaryText01,
         backgroundColor = MaterialTheme.theme.colors.primaryUi01,
+        windowInsets = windowInsets,
         navigationButton = navigationButton,
         actions = actions,
-        onNavigationClick = onNavigationClick
+        onNavigationClick = onNavigationClick,
     )
 }
 
-@Preview(showBackground = true)
+@ShowkaseComposable(name = "BottomSheetAppBar", group = "Bottom sheet", styleName = "Light", defaultStyle = true)
+@Preview(name = "Light")
 @Composable
-private fun BottomSheetAppBarPreview(@PreviewParameter(ThemePreviewParameterProvider::class) themeType: Theme.ThemeType) {
-    AppTheme(themeType) {
-        Column {
-            BottomSheetAppBar(title = "Hello World", navigationButton = NavigationButton.Back, onNavigationClick = {})
-            BottomSheetAppBar(title = "Hello World", navigationButton = NavigationButton.Close, onNavigationClick = {})
-        }
+fun BottomSheetAppBarLightPreview() {
+    AppThemeWithBackground(Theme.ThemeType.LIGHT) {
+        BottomSheetAppBar(title = "Hello World", navigationButton = NavigationButton.Close, onNavigationClick = {})
+    }
+}
+
+@ShowkaseComposable(name = "BottomSheetAppBar", group = "Bottom sheet", styleName = "Back")
+@Preview(name = "Back")
+@Composable
+fun BottomSheetAppBarBackPreview() {
+    AppThemeWithBackground(Theme.ThemeType.LIGHT) {
+        BottomSheetAppBar(title = "Hello World", navigationButton = NavigationButton.Back, onNavigationClick = {})
+    }
+}
+
+@ShowkaseComposable(name = "BottomSheetAppBar", group = "Bottom sheet", styleName = "Dark")
+@Preview(name = "Dark")
+@Composable
+fun BottomSheetAppBarDarkPreview() {
+    AppThemeWithBackground(Theme.ThemeType.DARK) {
+        BottomSheetAppBar(title = "Hello World", navigationButton = NavigationButton.Close, onNavigationClick = {})
     }
 }

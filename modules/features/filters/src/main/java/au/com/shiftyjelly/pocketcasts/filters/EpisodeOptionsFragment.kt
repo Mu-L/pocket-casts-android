@@ -18,13 +18,12 @@ import au.com.shiftyjelly.pocketcasts.ui.helper.FragmentHostListener
 import au.com.shiftyjelly.pocketcasts.ui.theme.ThemeColor
 import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragment
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import timber.log.Timber
-import javax.inject.Inject
-import kotlin.coroutines.CoroutineContext
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 private const val ARG_PLAYLIST_UUID = "playlist_uuid"
@@ -72,11 +71,9 @@ class EpisodeOptionsFragment : BaseFragment(), CoroutineScope {
         val recyclerView = binding.recyclerView
 
         launch {
-            val playlist = withContext(Dispatchers.Default) {
-                val uuid = requireArguments().getString(ARG_PLAYLIST_UUID)!!
-                Timber.d("Loading playlist $uuid")
-                playlistManager.findByUuid(uuid)
-            } ?: return@launch
+            val uuid = requireArguments().getString(ARG_PLAYLIST_UUID)!!
+            Timber.d("Loading playlist $uuid")
+            val playlist = playlistManager.findByUuid(uuid) ?: return@launch
             this@EpisodeOptionsFragment.playlist = playlist
 
             val unplayedOption = FilterOption(LR.string.unplayed, playlist.unplayed, { v, _ ->
@@ -114,10 +111,12 @@ class EpisodeOptionsFragment : BaseFragment(), CoroutineScope {
                     val userPlaylistUpdate = if (userChanged) {
                         UserPlaylistUpdate(
                             listOf(PlaylistProperty.EpisodeStatus),
-                            PlaylistUpdateSource.FILTER_EPISODE_LIST
+                            PlaylistUpdateSource.FILTER_EPISODE_LIST,
                         )
-                    } else null
-                    playlistManager.update(playlist, userPlaylistUpdate)
+                    } else {
+                        null
+                    }
+                    playlistManager.updateBlocking(playlist, userPlaylistUpdate)
 
                     launch(Dispatchers.Main) { (activity as FragmentHostListener).closeModal(this@EpisodeOptionsFragment) }
                 }

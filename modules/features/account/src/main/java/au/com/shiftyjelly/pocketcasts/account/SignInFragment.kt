@@ -1,7 +1,5 @@
 package au.com.shiftyjelly.pocketcasts.account
 
-import android.app.PendingIntent
-import android.os.Build
 import android.os.Bundle
 import android.view.LayoutInflater
 import android.view.View
@@ -27,13 +25,6 @@ import au.com.shiftyjelly.pocketcasts.ui.R as UR
 
 @AndroidEntryPoint
 class SignInFragment : BaseFragment() {
-    companion object {
-        const val EXTRA_SUCCESS_INTENT = "success_intent"
-
-        fun newInstance(): SignInFragment {
-            return SignInFragment()
-        }
-    }
 
     private val viewModel: SignInViewModel by viewModels()
     private var binding: FragmentSignInBinding? = null
@@ -122,15 +113,6 @@ class SignInFragment : BaseFragment() {
                         findNavController().popBackStack(R.id.promoCodeFragment, false)
                     } else {
                         activity?.finish()
-
-                        if (arguments?.containsKey(EXTRA_SUCCESS_INTENT) == true) {
-                            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                arguments?.getParcelable(EXTRA_SUCCESS_INTENT, PendingIntent::class.java)
-                            } else {
-                                @Suppress("DEPRECATION")
-                                arguments?.getParcelable(EXTRA_SUCCESS_INTENT)
-                            }?.send()
-                        }
                     }
                 }
             }

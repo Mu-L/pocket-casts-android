@@ -3,14 +3,27 @@ package au.com.shiftyjelly.pocketcasts.repositories.sync
 import android.content.Context
 import android.os.Build
 import android.os.SystemClock
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
+import androidx.annotation.VisibleForTesting
+import androidx.lifecycle.ProcessLifecycleOwner
+import androidx.lifecycle.lifecycleScope
+import androidx.work.WorkManager
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.models.entity.Bookmark
+import au.com.shiftyjelly.pocketcasts.models.entity.ChapterIndices
 import au.com.shiftyjelly.pocketcasts.models.entity.Folder
 import au.com.shiftyjelly.pocketcasts.models.entity.Playlist
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
+import au.com.shiftyjelly.pocketcasts.models.entity.UserPodcastRating
 import au.com.shiftyjelly.pocketcasts.models.to.StatsBundle
 import au.com.shiftyjelly.pocketcasts.models.to.SubscriptionStatus
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodePlayingStatus
+import au.com.shiftyjelly.pocketcasts.models.type.EpisodesSortType
+import au.com.shiftyjelly.pocketcasts.models.type.PodcastsSortType
+import au.com.shiftyjelly.pocketcasts.models.type.SyncStatus
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
+import au.com.shiftyjelly.pocketcasts.repositories.bookmark.BookmarkManager
 import au.com.shiftyjelly.pocketcasts.repositories.file.FileStorage
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
@@ -18,86 +31,113 @@ import au.com.shiftyjelly.pocketcasts.repositories.podcast.FolderManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PlaylistManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.UserEpisodeManager
+import au.com.shiftyjelly.pocketcasts.repositories.ratings.RatingsManager
 import au.com.shiftyjelly.pocketcasts.repositories.shortcuts.PocketCastsShortcuts
 import au.com.shiftyjelly.pocketcasts.repositories.subscription.SubscriptionManager
 import au.com.shiftyjelly.pocketcasts.repositories.user.StatsManager
-import au.com.shiftyjelly.pocketcasts.servers.podcast.PodcastCacheServerManagerImpl
-import au.com.shiftyjelly.pocketcasts.servers.sync.FolderResponse
-import au.com.shiftyjelly.pocketcasts.servers.sync.PodcastResponse
-import au.com.shiftyjelly.pocketcasts.servers.sync.SyncServerManager
+import au.com.shiftyjelly.pocketcasts.servers.extensions.toDate
+import au.com.shiftyjelly.pocketcasts.servers.podcast.PodcastCacheServiceManager
 import au.com.shiftyjelly.pocketcasts.servers.sync.SyncSettingsTask
-import au.com.shiftyjelly.pocketcasts.servers.sync.old.SyncOldServerManager
-import au.com.shiftyjelly.pocketcasts.servers.sync.old.SyncUpdateResponse
-import au.com.shiftyjelly.pocketcasts.utils.SentryHelper
-import au.com.shiftyjelly.pocketcasts.utils.extensions.parseIsoDate
+import au.com.shiftyjelly.pocketcasts.servers.sync.update.SyncUpdateResponse
+import au.com.shiftyjelly.pocketcasts.utils.Util
 import au.com.shiftyjelly.pocketcasts.utils.extensions.toIsoString
 import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
+import com.automattic.android.tracks.crashlogging.CrashLogging
+import com.pocketcasts.service.api.PodcastFolder
+import com.pocketcasts.service.api.UserPodcastResponse
+import com.pocketcasts.service.api.dateAddedOrNull
+import com.pocketcasts.service.api.folderUuidOrNull
+import com.pocketcasts.service.api.sortPositionOrNull
 import io.reactivex.Completable
 import io.reactivex.Maybe
 import io.reactivex.Observable
 import io.reactivex.Single
 import io.reactivex.rxkotlin.Singles
 import io.reactivex.schedulers.Schedulers
+import java.time.Instant
+import java.util.Date
+import java.util.Locale
+import kotlin.coroutines.CoroutineContext
+import kotlin.math.roundToInt
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.rx2.rxCompletable
+import kotlinx.coroutines.rx2.rxSingle
 import org.json.JSONArray
 import org.json.JSONException
 import org.json.JSONObject
 import timber.log.Timber
-import java.util.Date
-import kotlin.coroutines.CoroutineContext
 
 class PodcastSyncProcess(
     val context: Context,
+    val applicationScope: CoroutineScope,
     var settings: Settings,
     var episodeManager: EpisodeManager,
     var podcastManager: PodcastManager,
     var playlistManager: PlaylistManager,
+    var bookmarkManager: BookmarkManager,
     var statsManager: StatsManager,
     var fileStorage: FileStorage,
     var playbackManager: PlaybackManager,
-    var syncOldServerManager: SyncOldServerManager,
-    var syncServerManager: SyncServerManager,
-    var podcastCacheServerManager: PodcastCacheServerManagerImpl,
+    var podcastCacheServiceManager: PodcastCacheServiceManager,
     var userEpisodeManager: UserEpisodeManager,
     var subscriptionManager: SubscriptionManager,
-    var folderManager: FolderManager
+    var folderManager: FolderManager,
+    var syncManager: SyncManager,
+    var ratingsManager: RatingsManager,
+    val crashLogging: CrashLogging,
+    val analyticsTracker: AnalyticsTracker,
 ) : CoroutineScope {
     override val coroutineContext: CoroutineContext
         get() = Dispatchers.Default
 
     fun run(): Completable {
-        if (!settings.isLoggedIn()) {
-            playlistManager.deleteSynced()
+        if (!syncManager.isLoggedIn()) {
+            playlistManager.deleteSyncedBlocking()
 
             Timber.i("SyncProcess: User not logged in")
             return Completable.complete()
         }
 
-        val lastModified = settings.getLastModified()
+        val lastSyncTimeString = settings.getLastModified()
+        val lastSyncTime = runCatching { Instant.parse(lastSyncTimeString) }
+            .onFailure { Timber.e(it, "Could not convert lastModified String to Long: $lastSyncTimeString") }
+            .getOrDefault(Instant.EPOCH)
 
-        val downloadObservable = if (lastModified == null) {
+        val downloadObservable = if (lastSyncTime == Instant.EPOCH) {
             performFullSync().andThen(syncUpNext())
         } else {
             if (settings.getHomeGridNeedsRefresh()) {
                 Timber.i("SyncProcess: Refreshing home grid")
                 performHomeGridRefresh()
                     .andThen(syncUpNext())
-                    .andThen(performIncrementalSync(lastModified))
+                    .andThen(performIncrementalSync(lastSyncTime))
             } else {
                 syncUpNext()
-                    .andThen(performIncrementalSync(lastModified))
+                    .andThen(performIncrementalSync(lastSyncTime))
             }
         }
         val syncUpNextObservable = downloadObservable
-            .andThen(syncSettings())
-            .andThen(syncCloudFiles())
-            .andThen(firstSyncChanges())
-            .andThen(syncPlayHistory())
+            .andThen(rxCompletable { syncSettings(lastSyncTime) })
+            .andThen(rxCompletable { syncCloudFiles() })
+            .andThen(rxCompletable { firstSyncChanges() })
+            .andThen(
+                if (Util.isWearOs(context)) {
+                    // We don't use the play history on wear os, so we can skip this potentially large call
+                    Completable.complete()
+                } else {
+                    Completable.fromAction {
+                        syncPlayHistory()
+                    }
+                },
+            )
+            .andThen(rxCompletable { syncRatings() })
         return syncUpNextObservable
             .doOnError { throwable ->
-                SentryHelper.recordException("Sync failed", throwable)
+                crashLogging.sendReport(throwable, message = "Sync failed")
                 LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, throwable, "SyncProcess: Sync failed")
             }
             .doOnComplete {
@@ -105,36 +145,45 @@ class PodcastSyncProcess(
             }
     }
 
-    private fun performIncrementalSync(lastModified: String): Completable {
+    @VisibleForTesting
+    fun performIncrementalSync(lastSyncTime: Instant): Completable {
         val uploadData = uploadChanges()
-        val uploadObservable = syncOldServerManager.syncUpdate(uploadData.first, lastModified)
-        val downloadObservable = uploadObservable.flatMap {
-            processServerResponse(it, uploadData.second)
+        val uploadObservable = rxSingle {
+            val startTime = SystemClock.elapsedRealtime()
+            val updateResponse = syncManager.syncUpdate(uploadData.first, lastSyncTime)
+            logTime("Refresh - sync update", startTime)
+            updateResponse
+        }
+        return uploadObservable.flatMap {
+            val startTime = SystemClock.elapsedRealtime()
+            val response = processServerResponse(it, uploadData.second)
+            logTime("Refresh - process server response", startTime)
+            response
         }.ignoreElement()
-        return downloadObservable
     }
 
     private fun performFullSync(): Completable {
         // grab the last sync date before we begin
-        return syncServerManager.getLastSyncAt()
+        return syncManager.getLastSyncAtRxSingle()
             .flatMapCompletable { lastSyncAt ->
-                cacheStats()
+                rxCompletable { cacheStats() }
                     .andThen(downloadAndImportHomeFolder())
                     .andThen(downloadAndImportFilters())
+                    .andThen(rxCompletable { downloadAndImportBookmarks() })
                     .andThen(Completable.fromAction { settings.setLastModified(lastSyncAt) })
             }
     }
 
     private fun downloadAndImportHomeFolder(): Completable {
         // get all the current podcasts and folder uuids before the sync
-        val localPodcasts = podcastManager.findSubscribedRx()
+        val localPodcasts = podcastManager.findSubscribedRxSingle()
         val localFolderUuids = folderManager.findFoldersSingle().map { it.map { folder -> folder.uuid } }
         // get all the users podcast uuids from the server
-        val serverHomeFolder = syncServerManager.getHomeFolder()
+        val serverHomeFolder = rxSingle { syncManager.getHomeFolder() }
         return Singles.zip(serverHomeFolder, localPodcasts, localFolderUuids)
             .flatMapCompletable { (serverHomeFolder, localPodcasts, localFolderUuids) ->
-                importPodcastsFullSync(serverPodcasts = serverHomeFolder.podcasts ?: emptyList(), localPodcasts = localPodcasts)
-                    .andThen(importFoldersFullSync(serverFolders = serverHomeFolder.folders ?: emptyList(), localFolderUuids = localFolderUuids))
+                importPodcastsFullSync(serverPodcasts = serverHomeFolder.podcastsList, localPodcasts = localPodcasts)
+                    .andThen(importFoldersFullSync(serverFolders = serverHomeFolder.foldersList, localFolderUuids = localFolderUuids))
             }
     }
 
@@ -149,14 +198,14 @@ class PodcastSyncProcess(
         }
     }
 
-    private fun importPodcastsFullSync(serverPodcasts: List<PodcastResponse>, localPodcasts: List<Podcast>): Completable {
+    private fun importPodcastsFullSync(serverPodcasts: List<UserPodcastResponse>, localPodcasts: List<Podcast>): Completable {
         val localUuids = localPodcasts.map { podcast -> podcast.uuid }.toSet()
         val localPodcastsMap = localPodcasts.associateBy { it.uuid }
         val serverUuids = serverPodcasts.map { it.uuid }.toSet()
         val serverPodcastsMap = serverPodcasts.associateBy { it.uuid }
         // mark the podcasts missing from the server as not synced
         val serverMissingUuids = localUuids - serverUuids
-        val markMissingNotSynced = Observable.fromIterable(serverMissingUuids).flatMapCompletable { uuid -> Completable.fromAction { podcastManager.markPodcastUuidAsNotSynced(uuid) } }
+        val markMissingNotSynced = Observable.fromIterable(serverMissingUuids).flatMapCompletable { uuid -> Completable.fromAction { podcastManager.markPodcastUuidAsNotSyncedBlocking(uuid) } }
         // subscribe to each podcast
         val localMissingUuids = serverUuids - localUuids
         val subscribeToPodcasts = Observable
@@ -166,7 +215,8 @@ class PodcastSyncProcess(
                     Observable.just(uuid)
                         .subscribeOn(Schedulers.io())
                         .flatMapMaybe { importPodcast(serverPodcastsMap[it]) }
-                }, 5
+                },
+                5,
             )
             .ignoreElements()
         // update existing podcasts
@@ -181,7 +231,7 @@ class PodcastSyncProcess(
         return markMissingNotSynced.andThen(subscribeToPodcasts).andThen(updatePodcasts)
     }
 
-    private fun importFoldersFullSync(serverFolders: List<FolderResponse>, localFolderUuids: List<String>): Completable {
+    private fun importFoldersFullSync(serverFolders: List<PodcastFolder>, localFolderUuids: List<String>): Completable {
         val serverUuids = serverFolders.map { it.folderUuid }
         val serverMissingUuids = localFolderUuids - serverUuids
         // delete the local folders that aren't on the server
@@ -199,80 +249,117 @@ class PodcastSyncProcess(
         return deleteLocalFolders.andThen(upsertServerFolders)
     }
 
-    private fun downloadAndImportFilters(): Completable {
-        return syncServerManager.getFilters()
-            .flatMapCompletable { filters -> importFilters(filters) }
-    }
-
-    private fun importPodcast(podcastResponse: PodcastResponse?): Maybe<Podcast> {
-        val podcastUuid = podcastResponse?.uuid ?: return Maybe.empty()
-        return podcastManager.subscribeToPodcastRx(podcastUuid = podcastUuid, sync = false)
-            .flatMap { podcast -> updatePodcastSyncValues(podcast, podcastResponse).toSingleDefault(podcast) }
-            .toMaybe()
-            .doOnError { LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, "Could not import server podcast $podcastResponse.uuid", it) }
-            .onErrorComplete()
-    }
-
-    private fun updatePodcastSyncValues(podcast: Podcast?, podcastResponse: PodcastResponse?): Completable = rxCompletable {
-        if (podcast == null || podcastResponse == null) {
-            return@rxCompletable
+    private fun PodcastFolder.toFolder(): Folder? {
+        val dateAdded = dateAdded?.toDate()
+        if (folderUuid == null || name == null || dateAdded == null) {
+            return null
         }
-        // use the oldest local or server added date
-        val serverAddedDate = podcastResponse.dateAdded?.parseIsoDate() ?: Date()
-        val localAddedDate = podcast.addedDate
-        val addedDate = if (localAddedDate == null || serverAddedDate < localAddedDate) serverAddedDate else localAddedDate
-
-        podcastManager.updateSyncData(
-            podcast = podcast,
-            startFromSecs = podcastResponse.autoStartFrom ?: podcast.startFromSecs,
-            skipLastSecs = podcastResponse.autoSkipLast ?: podcast.skipLastSecs,
-            folderUuid = podcastResponse.folderUuid,
-            sortPosition = podcastResponse.sortPosition ?: podcast.sortPosition,
-            addedDate = addedDate
+        return Folder(
+            uuid = folderUuid,
+            name = name,
+            color = color,
+            addedDate = dateAdded,
+            sortPosition = sortPosition,
+            podcastsSortType = PodcastsSortType.fromServerId(podcastsSortType),
+            deleted = false,
+            syncModified = Folder.SYNC_MODIFIED_FROM_SERVER,
         )
     }
 
-    private fun syncUpNext(): Completable {
-        return Completable.fromAction {
-            val startTime = SystemClock.elapsedRealtime()
-            UpNextSyncJob.run(settings, context)
-            LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Refresh - sync up next - ${String.format("%d ms", SystemClock.elapsedRealtime() - startTime)}")
-        }
+    private fun downloadAndImportFilters(): Completable {
+        return syncManager.getFiltersRxSingle()
+            .flatMapCompletable { filters -> importFilters(filters) }
     }
 
-    private fun syncPlayHistory(): Completable {
-        return Completable.fromAction {
-            val startTime = SystemClock.elapsedRealtime()
-            SyncHistoryTask.scheduleToRun(context)
-            LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Refresh - sync history - ${String.format("%d ms", SystemClock.elapsedRealtime() - startTime)}")
-        }
+    private suspend fun downloadAndImportBookmarks() {
+        val bookmarks = syncManager.getBookmarks()
+        importBookmarks(bookmarks)
     }
 
-    private fun syncSettings(): Completable {
-        return rxCompletable {
-            val startTime = SystemClock.elapsedRealtime()
-            SyncSettingsTask.run(settings, syncServerManager)
-            LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "Refresh - sync settings - ${String.format("%d ms", SystemClock.elapsedRealtime() - startTime)}")
-        }
+    private fun importPodcast(podcastResponse: UserPodcastResponse?): Maybe<Podcast> {
+        val podcastUuid = podcastResponse?.uuid ?: return Maybe.empty()
+        return podcastManager.subscribeToPodcastRxSingle(podcastUuid = podcastUuid, sync = false, shouldAutoDownload = false)
+            .flatMap { podcast -> updatePodcastSyncValues(podcast, podcastResponse).toSingleDefault(podcast) }
+            .toMaybe()
+            .doOnError { LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, it, "Could not import server podcast %s", podcastUuid) }
+            .onErrorComplete()
     }
 
-    private fun syncCloudFiles(): Completable {
-        return subscriptionManager.getSubscriptionStatus(allowCache = false)
-            .flatMapCompletable {
-                if (it is SubscriptionStatus.Plus) {
-                    rxCompletable { userEpisodeManager.syncFiles(playbackManager) }
-                } else {
-                    Completable.complete()
-                }
+    private fun updatePodcastSyncValues(podcast: Podcast?, podcastResponse: UserPodcastResponse?): Completable = rxCompletable {
+        if (podcast == null || podcastResponse == null) {
+            return@rxCompletable
+        }
+
+        // use the oldest local or server added date
+        val serverAddedDate = podcastResponse.dateAddedOrNull?.toDate() ?: Date()
+        val localAddedDate = podcast.addedDate
+        val resolvedAddedDate = if (localAddedDate == null || serverAddedDate < localAddedDate) serverAddedDate else localAddedDate
+
+        podcast.apply {
+            startFromSecs = podcastResponse.autoStartFrom
+            skipLastSecs = podcastResponse.autoSkipLast
+            folderUuid = podcastResponse.folderUuidOrNull?.value
+            sortPosition = podcastResponse.sortPositionOrNull?.value ?: podcast.sortPosition
+            addedDate = resolvedAddedDate
+        }
+
+        podcastManager.updatePodcastBlocking(podcast)
+    }
+
+    private fun syncUpNext() = Completable.create { emitter ->
+        val startTime = SystemClock.elapsedRealtime()
+        val workRequestId = UpNextSyncWorker.enqueue(syncManager, context)
+        if (workRequestId == null) {
+            logTime("Refresh - sync up next, work request id is null", startTime)
+            emitter.onComplete()
+        } else {
+            ProcessLifecycleOwner.get().lifecycleScope.launch {
+                WorkManager.getInstance(context).getWorkInfoByIdFlow(workRequestId).first { it.state.isFinished }
+                logTime("Refresh - sync up next", startTime)
+                emitter.onComplete()
             }
+        }
     }
 
-    private fun uploadChanges(): Pair<String, List<Episode>> {
+    private fun syncPlayHistory() {
+        val startTime = SystemClock.elapsedRealtime()
+        SyncHistoryTask.scheduleToRun(context)
+        logTime("Refresh - sync play history", startTime)
+    }
+
+    private suspend fun syncSettings(lastSyncTime: Instant) {
+        val startTime = SystemClock.elapsedRealtime()
+        SyncSettingsTask.run(settings, lastSyncTime, syncManager)
+        logTime("Refresh - sync settings", startTime)
+    }
+
+    private suspend fun syncCloudFiles() {
+        val status = subscriptionManager.getSubscriptionStatus(allowCache = false)
+        if (status is SubscriptionStatus.Paid) {
+            userEpisodeManager.syncFiles(playbackManager)
+        }
+    }
+
+    private suspend fun syncRatings() {
+        syncManager.getPodcastRatings()?.podcastRatingsList
+            ?.mapNotNull { rating ->
+                val modifiedAt = rating.modifiedAt.toDate() ?: return@mapNotNull null
+                UserPodcastRating(
+                    podcastUuid = rating.podcastUuid,
+                    rating = rating.podcastRating,
+                    modifiedAt = modifiedAt,
+                )
+            }
+            ?.let { ratingsManager.updateUserRatings(it) }
+    }
+
+    private fun uploadChanges(): Pair<String, List<PodcastEpisode>> {
         val records = JSONArray()
         uploadPodcastChanges(records)
         val episodes = uploadEpisodesChanges(records)
         uploadPlaylistChanges(records)
         uploadFolderChanges(records)
+        uploadBookmarksChanges(records)
         uploadStatChanges(records)
 
         val data = JSONObject()
@@ -284,7 +371,7 @@ class PodcastSyncProcess(
 
     private fun uploadFolderChanges(records: JSONArray) {
         try {
-            val folders = folderManager.findFoldersToSync()
+            val folders = folderManager.findFoldersToSyncBlocking()
             for (folder in folders) {
                 val fields = JSONObject()
 
@@ -315,7 +402,7 @@ class PodcastSyncProcess(
 
     private fun uploadPlaylistChanges(records: JSONArray) {
         try {
-            val playlists = playlistManager.findPlaylistsToSync()
+            val playlists = playlistManager.findPlaylistsToSyncBlocking()
             for (playlist in playlists) {
                 val fields = JSONObject()
 
@@ -396,9 +483,8 @@ class PodcastSyncProcess(
 
     private fun uploadPodcastChanges(records: JSONArray) {
         try {
-            val podcasts = podcastManager.findPodcastsToSync()
+            val podcasts = podcastManager.findPodcastsToSyncBlocking()
             for (podcast in podcasts) {
-
                 try {
                     val fields = JSONObject().apply {
                         put("uuid", podcast.uuid)
@@ -425,9 +511,9 @@ class PodcastSyncProcess(
         }
     }
 
-    private fun uploadEpisodesChanges(records: JSONArray): List<Episode> {
+    private fun uploadEpisodesChanges(records: JSONArray): List<PodcastEpisode> {
         try {
-            val episodes = episodeManager.findEpisodesToSync()
+            val episodes = episodeManager.findEpisodesToSyncBlocking()
             episodes.forEach { episode ->
                 uploadEpisodeChanges(episode, records)
             }
@@ -439,7 +525,7 @@ class PodcastSyncProcess(
         }
     }
 
-    private fun uploadEpisodeChanges(episode: Episode, records: JSONArray) {
+    private fun uploadEpisodeChanges(episode: PodcastEpisode, records: JSONArray) {
         val fields = JSONObject()
 
         try {
@@ -476,6 +562,11 @@ class PodcastSyncProcess(
             }
             fields.put("user_podcast_uuid", episode.podcastUuid)
 
+            episode.deselectedChaptersModified?.let { deselectedChaptersModified ->
+                fields.put("deselected_chapters", ChapterIndices.toString(episode.deselectedChapters))
+                fields.put("deselected_chapters_modified", deselectedChaptersModified.time)
+            }
+
             val record = JSONObject().apply {
                 put("fields", fields)
                 put("type", "UserEpisode")
@@ -487,59 +578,100 @@ class PodcastSyncProcess(
         }
     }
 
-    private fun processServerResponse(response: SyncUpdateResponse, episodes: List<Episode>): Single<String> {
+    private fun uploadBookmarksChanges(records: JSONArray) {
+        try {
+            val bookmarks = bookmarkManager.findBookmarksToSyncBlocking()
+            bookmarks.forEach { bookmark ->
+                @Suppress("DEPRECATION")
+                uploadBookmarkChanges(bookmark, records)
+            }
+        } catch (e: Exception) {
+            Timber.e(e, "Unable to load bookmarks to sync.")
+            throw PocketCastsSyncException(e)
+        }
+    }
+
+    private fun uploadBookmarkChanges(bookmark: Bookmark, records: JSONArray) {
+        try {
+            val fields = JSONObject().apply {
+                put("bookmark_uuid", bookmark.uuid)
+                put("podcast_uuid", bookmark.podcastUuid)
+                put("episode_uuid", bookmark.episodeUuid)
+                put("time", bookmark.timeSecs)
+                put("created_at", bookmark.createdAt.toIsoString())
+            }
+            bookmark.titleModified?.let { titleModified ->
+                fields.put("title", bookmark.title)
+                fields.put("title_modified", titleModified)
+            }
+            bookmark.deletedModified?.let { deletedModified ->
+                fields.put("is_deleted", if (bookmark.deleted) "1" else "0")
+                fields.put("is_deleted_modified", deletedModified)
+            }
+            val record = JSONObject().apply {
+                put("fields", fields)
+                put("type", "UserBookmark")
+            }
+            records.put(record)
+        } catch (e: JSONException) {
+            crashLogging.sendReport(e)
+            Timber.e(e, "Unable to save bookmark")
+        }
+    }
+
+    private fun processServerResponse(response: SyncUpdateResponse, episodes: List<PodcastEpisode>): Single<String> {
         if (response.lastModified == null) {
             return Single.error(Exception("Server response doesn't return a last modified"))
         }
         // import episodes first so that newly added podcasts get their own episodes from the server.
-        return markAllLocalItemsSynced(episodes)
+        return rxCompletable { markAllLocalItemsSynced(episodes) }
             .andThen(importEpisodes(response.episodes))
             .andThen(importPodcasts(response.podcasts))
             .andThen(importFilters(response.playlists))
             .andThen(importFolders(response.folders))
+            .andThen(rxCompletable { importBookmarks(response.bookmarks) })
             .andThen(updateSettings(response))
             .andThen(updateShortcuts(response.playlists))
-            .andThen(cacheStats())
+            .andThen(rxCompletable { cacheStats() })
             .toSingle { response.lastModified }
     }
 
-    private fun cacheStats(): Completable {
-        return rxCompletable {
-            statsManager.cacheMergedStats()
-            statsManager.setSyncStatus(true)
-        }
+    private suspend fun cacheStats() {
+        statsManager.cacheMergedStats()
+        statsManager.setSyncStatus(true)
     }
 
-    private fun markAllLocalItemsSynced(episodes: List<Episode>): Completable {
-        return Completable.fromAction {
-            podcastManager.markAllPodcastsSynced()
-            episodeManager.markAllEpisodesSynced(episodes)
-            playlistManager.markAllSynced()
-            folderManager.markAllSynced()
-        }
+    private suspend fun markAllLocalItemsSynced(episodes: List<PodcastEpisode>) {
+        podcastManager.markAllPodcastsSynced()
+        episodeManager.markAllEpisodesSynced(episodes)
+        playlistManager.markAllSynced()
+        folderManager.markAllSynced()
     }
 
-    private fun firstSyncChanges(): Completable {
-        return Completable.fromAction {
-            val firstSync = settings.isFirstSyncRun()
-            if (firstSync) {
-                fileStorage.fixBrokenFiles(episodeManager)
-                settings.setFirstSyncRun(false)
-            }
+    private suspend fun firstSyncChanges() {
+        val firstSync = settings.isFirstSyncRun()
+        if (firstSync) {
+            fileStorage.fixBrokenFiles(episodeManager)
+            settings.setFirstSyncRun(false)
         }
     }
 
     private fun updateSettings(response: SyncUpdateResponse): Completable {
         return Completable.fromAction {
             settings.setLastModified(response.lastModified)
-            settings.setLastSyncTime(System.currentTimeMillis())
         }
     }
 
     private fun updateShortcuts(playlists: List<Playlist>): Completable {
         // if any playlists have changed update the launcher shortcuts
         if (playlists.isNotEmpty() && Build.VERSION.SDK_INT >= Build.VERSION_CODES.N_MR1) {
-            PocketCastsShortcuts.update(playlistManager, true, context)
+            PocketCastsShortcuts.update(
+                playlistManager = playlistManager,
+                force = true,
+                coroutineScope = applicationScope,
+                context = context,
+                source = PocketCastsShortcuts.Source.UPDATE_SHORTCUTS,
+            )
         }
         return Completable.complete()
     }
@@ -552,7 +684,7 @@ class PodcastSyncProcess(
                         .subscribeOn(Schedulers.computation())
                         .flatMap { importPodcast(it).toObservable() }
                 },
-                10
+                10,
             )
             .ignoreElements()
     }
@@ -572,6 +704,12 @@ class PodcastSyncProcess(
     private fun importFolders(folders: List<Folder>): Completable {
         return Observable.fromIterable(folders)
             .flatMapCompletable { folder -> importFolder(folder) }
+    }
+
+    private suspend fun importBookmarks(bookmarks: List<Bookmark>) {
+        for (bookmark in bookmarks) {
+            importBookmark(bookmark)
+        }
     }
 
     private fun importFolder(sync: Folder): Completable {
@@ -595,9 +733,9 @@ class PodcastSyncProcess(
                 return@fromCallable null
             }
 
-            var playlist = playlistManager.findByUuid(uuid)
+            var playlist = playlistManager.findByUuidBlocking(uuid)
             if (sync.deleted) {
-                playlist?.let { playlistManager.deleteSynced(it) }
+                playlist?.let { playlistManager.deleteSyncedBlocking(it) }
                 return@fromCallable null
             }
 
@@ -629,9 +767,9 @@ class PodcastSyncProcess(
             }
 
             if (playlist.id == null) {
-                playlist.id = playlistManager.create(playlist)
+                playlist.id = playlistManager.createBlocking(playlist)
             } else {
-                playlistManager.update(playlist, userPlaylistUpdate = null)
+                playlistManager.updateBlocking(playlist, userPlaylistUpdate = null)
             }
 
             return@fromCallable playlist
@@ -640,11 +778,11 @@ class PodcastSyncProcess(
 
     private fun importPodcast(sync: SyncUpdateResponse.PodcastSync): Maybe<Podcast> {
         val uuid = sync.uuid
-        if (uuid == null || uuid.isNullOrBlank()) {
+        if (uuid.isNullOrBlank()) {
             return Maybe.empty()
         }
 
-        val podcast = podcastManager.findPodcastByUuid(uuid)
+        val podcast = podcastManager.findPodcastByUuidBlocking(uuid)
         return if (podcast == null) {
             importServerPodcast(sync)
         } else {
@@ -657,17 +795,13 @@ class PodcastSyncProcess(
         val isSubscribed = podcastSync.subscribed
         val podcastUuid = podcastSync.uuid
         if (podcastSync.subscribed && isSubscribed && podcastUuid != null) {
-            return podcastManager.subscribeToPodcastRx(podcastUuid, sync = false)
+            return podcastManager.subscribeToPodcastRxSingle(podcastUuid, sync = false, shouldAutoDownload = false)
                 .doOnSuccess { podcast ->
-                    podcast.startFromSecs = podcastSync.startFromSecs ?: 0
-                    podcast.skipLastSecs = podcastSync.skipLastSecs ?: 0
-                    podcast.addedDate = podcastSync.dateAdded
-                    podcastSync.sortPosition?.let { podcast.sortPosition = it }
-                    podcastSync.folderUuid?.let { podcast.folderUuid = it }
-                    podcastManager.updatePodcast(podcast)
+                    applyPodcastSyncUpdatesToPodcast(podcast, podcastSync)
+                    podcastManager.updatePodcastBlocking(podcast)
                 }
                 .toMaybe()
-                .doOnError { LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, "Could not import server podcast $podcastUuid", it) }
+                .doOnError { LogBuffer.e(LogBuffer.TAG_BACKGROUND_TASKS, it, "Could not import server podcast  %s", podcastUuid) }
                 .onErrorComplete()
         } else {
             return Maybe.empty<Podcast>()
@@ -678,26 +812,32 @@ class PodcastSyncProcess(
         if (podcastSync.subscribed) {
             podcast.syncStatus = Podcast.SYNC_STATUS_SYNCED
             podcast.isSubscribed = true
-            podcast.isSubscribed = podcastSync.subscribed
-            podcastSync.startFromSecs?.let { podcast.startFromSecs = it }
-            podcastSync.skipLastSecs?.let { podcast.skipLastSecs = it }
-            podcastSync.sortPosition?.let { podcast.sortPosition = it }
-            podcast.folderUuid = podcastSync.folderUuid
-            podcast.addedDate = podcastSync.dateAdded
+            applyPodcastSyncUpdatesToPodcast(podcast, podcastSync)
 
-            podcastManager.updatePodcast(podcast)
+            podcastManager.updatePodcastBlocking(podcast)
         } else if (podcast.isSubscribed && !podcastSync.subscribed) { // Unsubscribed on the server but subscribed on device
             Timber.d("Unsubscribing from podcast $podcast during sync")
-            podcastManager.unsubscribe(podcast.uuid, playbackManager)
+            podcastManager.unsubscribeBlocking(podcast.uuid, playbackManager)
         }
         return Maybe.just(podcast)
     }
 
-    private fun importEpisode(episodeSync: SyncUpdateResponse.EpisodeSync): Maybe<Episode> {
+    private fun applyPodcastSyncUpdatesToPodcast(podcast: Podcast, podcastSync: SyncUpdateResponse.PodcastSync) {
+        podcast.addedDate = podcastSync.dateAdded
+        podcast.folderUuid = podcastSync.folderUuid
+        podcastSync.sortPosition?.let { podcast.sortPosition = it }
+        podcastSync.episodesSortOrder?.let { podcast.episodesSortType = EpisodesSortType.fromServerId(it) ?: EpisodesSortType.EPISODES_SORT_BY_TITLE_ASC }
+        podcastSync.startFromSecs?.let { podcast.startFromSecs = it }
+        podcastSync.skipLastSecs?.let { podcast.skipLastSecs = it }
+    }
+
+    fun importEpisode(episodeSync: SyncUpdateResponse.EpisodeSync): Maybe<PodcastEpisode> {
         val uuid = episodeSync.uuid ?: return Maybe.empty()
 
         // check if the episode already exists
-        val episode = episodeManager.findByUuid(uuid)
+        val episode = runBlocking {
+            episodeManager.findByUuid(uuid)
+        }
         return if (episode == null) {
             Maybe.empty()
         } else {
@@ -705,7 +845,7 @@ class PodcastSyncProcess(
         }
     }
 
-    private fun importExistingEpisode(sync: SyncUpdateResponse.EpisodeSync, episode: Episode): Single<Episode> {
+    private fun importExistingEpisode(sync: SyncUpdateResponse.EpisodeSync, episode: PodcastEpisode): Single<PodcastEpisode> {
         return Single.fromCallable {
             val playingEpisodeUuid = playbackManager.getCurrentEpisode()?.uuid
             val episodeInPlayer = playingEpisodeUuid != null && episode.uuid == playingEpisodeUuid
@@ -733,7 +873,7 @@ class PodcastSyncProcess(
                 } else {
                     episode.archivedModified = null
                     if (newIsArchive) {
-                        episodeManager.archive(episode, playbackManager, sync = false)
+                        episodeManager.archiveBlocking(episode, playbackManager, sync = false)
                     } else {
                         episode.isArchived = false
                         episode.lastArchiveInteraction = Date().time
@@ -763,18 +903,51 @@ class PodcastSyncProcess(
 
                 // don't update if times are very close
                 val currentUpTo = episode.playedUpTo
-                if (playedUpTo < currentUpTo - 2 || playedUpTo > currentUpTo + 2) {
+
+                val negativeSeekThresholdSecs = settings.getPlaybackEpisodePositionChangedOnSyncThresholdSecs()
+                if (playedUpTo < currentUpTo - negativeSeekThresholdSecs || playedUpTo > currentUpTo + 2) {
                     episode.playedUpTo = playedUpTo
                     episode.playedUpToModified = null
                     if (episodeInPlayer) {
+                        val diffSeconds = (playedUpTo - currentUpTo).roundToInt()
+                        if (diffSeconds < 0) {
+                            // Track if the position is skipping back on sync while the player is in paused state. This is to help debug the playback jumping issue.
+                            analyticsTracker.track(
+                                AnalyticsEvent.PLAYBACK_EPISODE_POSITION_CHANGED_ON_SYNC,
+                                mapOf(
+                                    "position_change" to diffSeconds,
+                                    "is_downloaded" to episode.isDownloaded,
+                                    "episode_uuid" to episode.uuid,
+                                    "podcast_uuid" to episode.podcastOrSubstituteUuid,
+                                ),
+                            )
+                        }
                         playbackManager.seekIfPlayingToTimeMs(episode.uuid, (playedUpTo * 1000).toInt())
                     }
                 }
             }
 
-            episodeManager.update(episode)
+            sync.deselectedChapters?.let {
+                episode.deselectedChapters = it
+                episode.deselectedChaptersModified = null
+            }
+
+            episodeManager.updateBlocking(episode)
 
             episode
         }
+    }
+
+    private suspend fun importBookmark(bookmark: Bookmark) {
+        if (bookmark.deleted) {
+            bookmarkManager.deleteSynced(bookmark.uuid)
+        } else {
+            bookmarkManager.upsertSynced(bookmark.copy(syncStatus = SyncStatus.SYNCED))
+        }
+    }
+
+    private fun logTime(message: String, startTime: Long) {
+        val time = SystemClock.elapsedRealtime() - startTime
+        LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "$message - ${String.format(Locale.ENGLISH, "%d ms", time)}")
     }
 }

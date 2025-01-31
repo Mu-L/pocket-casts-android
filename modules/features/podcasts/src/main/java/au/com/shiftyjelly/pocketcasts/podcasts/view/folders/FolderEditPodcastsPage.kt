@@ -44,8 +44,7 @@ import au.com.shiftyjelly.pocketcasts.compose.components.rememberViewInteropNest
 import au.com.shiftyjelly.pocketcasts.compose.theme
 import au.com.shiftyjelly.pocketcasts.models.entity.Folder
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
-import au.com.shiftyjelly.pocketcasts.podcasts.R
-import au.com.shiftyjelly.pocketcasts.podcasts.view.compose.components.LargePageTitle
+import au.com.shiftyjelly.pocketcasts.podcasts.view.components.LargePageTitle
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
@@ -57,7 +56,7 @@ fun FolderEditPodcastsPage(
     viewModel: FolderEditViewModel,
     navigationButton: NavigationButton = NavigationButton.Close,
     settings: Settings,
-    fragmentManager: FragmentManager
+    fragmentManager: FragmentManager,
 ) {
     val state: FolderEditViewModel.State by viewModel.state.collectAsState()
     val context = LocalContext.current
@@ -65,7 +64,7 @@ fun FolderEditPodcastsPage(
         Column {
             BottomSheetAppBar(
                 navigationButton = navigationButton,
-                onNavigationClick = onCloseClick
+                onNavigationClick = onCloseClick,
             )
             PageList(
                 onNextClick = onNextClick,
@@ -74,7 +73,7 @@ fun FolderEditPodcastsPage(
                 },
                 state = state,
                 viewModel = viewModel,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
             )
         }
     }
@@ -86,7 +85,7 @@ private fun PageList(
     onSortClick: () -> Unit,
     state: FolderEditViewModel.State,
     viewModel: FolderEditViewModel,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
     LazyColumn(modifier = modifier) {
         item {
@@ -95,14 +94,14 @@ private fun PageList(
                 SearchSortBar(
                     searchText = state.searchText,
                     onSearchTextChanged = { text -> viewModel.searchPodcasts(text) },
-                    onSortClick = onSortClick
+                    onSortClick = onSortClick,
                 )
                 HorizontalDivider()
                 Row(
                     modifier = Modifier
                         .fillMaxWidth()
                         .padding(horizontal = 16.dp, vertical = 10.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.CenterVertically,
                 ) {
                     PodcastSelectedText(count = state.selectedCount)
                 }
@@ -115,7 +114,7 @@ private fun PageList(
                 folder = if (state.folder?.uuid == podcastWithFolder.folder?.uuid) null else podcastWithFolder.folder,
                 selected = state.isSelected(podcastWithFolder.podcast),
                 addPodcast = { uuid -> viewModel.addPodcast(uuid) },
-                removePodcast = { uuid -> viewModel.removePodcast(uuid) }
+                removePodcast = { uuid -> viewModel.removePodcast(uuid) },
             )
         }
         item {
@@ -138,21 +137,22 @@ private fun SearchSortBar(searchText: String, onSearchTextChanged: (String) -> U
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .padding(bottom = 16.dp)
-            .fillMaxWidth()
+            .fillMaxWidth(),
     ) {
         SearchBar(
             text = searchText,
+            placeholder = stringResource(LR.string.search_podcasts),
             onTextChanged = onSearchTextChanged,
             modifier = Modifier
                 .padding(start = 16.dp)
-                .weight(1f)
+                .weight(1f),
         )
         IconButton(onClick = { onSortClick() }) {
             Icon(
                 painter = painterResource(IR.drawable.ic_sort),
                 contentDescription = stringResource(LR.string.podcasts_sort_order),
                 tint = MaterialTheme.theme.colors.primaryIcon01,
-                modifier = Modifier.padding(end = 16.dp, start = 16.dp)
+                modifier = Modifier.padding(end = 16.dp, start = 16.dp),
             )
         }
     }
@@ -165,7 +165,7 @@ private fun PodcastSelectRow(
     selected: Boolean,
     addPodcast: (uuid: String) -> Unit,
     removePodcast: (uuid: String) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
 ) {
     val onSelectionChanged: (Boolean) -> Unit = {
         if (it) {
@@ -176,52 +176,52 @@ private fun PodcastSelectRow(
     }
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = modifier.clickable { onSelectionChanged(!selected) }
+        modifier = modifier.clickable { onSelectionChanged(!selected) },
     ) {
         Box(
-            modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp)
+            modifier = Modifier.padding(start = 16.dp, end = 8.dp, top = 8.dp, bottom = 8.dp),
         ) {
             PodcastImage(
                 uuid = podcast.uuid,
-                modifier = Modifier.size(56.dp)
+                modifier = Modifier.size(56.dp),
             )
         }
         Column(
             modifier = Modifier
                 .padding(end = 8.dp)
-                .weight(1f)
+                .weight(1f),
         ) {
             if (folder != null) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     val folderColor = MaterialTheme.theme.colors.getFolderColor(folder.color)
                     Icon(
-                        painter = painterResource(R.drawable.ic_folder_small),
+                        painter = painterResource(IR.drawable.ic_folder_bold),
                         contentDescription = null,
                         tint = folderColor,
-                        modifier = Modifier.padding(end = 4.dp)
+                        modifier = Modifier.padding(end = 4.dp),
                     )
                     TextP50(
                         text = folder.name,
                         maxLines = 1,
                         color = folderColor,
-                        style = if (selected) TextStyle(textDecoration = TextDecoration.LineThrough) else LocalTextStyle.current
+                        style = if (selected) TextStyle(textDecoration = TextDecoration.LineThrough) else LocalTextStyle.current,
                     )
                 }
             }
             TextP40(
                 text = podcast.title,
-                maxLines = 1
+                maxLines = 1,
             )
             TextP50(
                 text = podcast.author,
                 maxLines = 1,
-                color = MaterialTheme.theme.colors.primaryText02
+                color = MaterialTheme.theme.colors.primaryText02,
             )
         }
         Checkbox(
             checked = selected,
             onCheckedChange = { selected -> onSelectionChanged(selected) },
-            modifier = Modifier.padding(end = 10.dp)
+            modifier = Modifier.padding(end = 10.dp),
         )
     }
 }

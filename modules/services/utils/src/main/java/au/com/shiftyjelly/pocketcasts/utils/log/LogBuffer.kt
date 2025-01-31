@@ -2,7 +2,6 @@ package au.com.shiftyjelly.pocketcasts.utils.log
 
 import android.util.Log
 import au.com.shiftyjelly.pocketcasts.utils.FileUtil
-import timber.log.Timber
 import java.io.File
 import java.io.FileWriter
 import java.io.IOException
@@ -11,12 +10,15 @@ import java.io.PrintWriter
 import java.io.StringWriter
 import java.text.SimpleDateFormat
 import java.util.Date
+import timber.log.Timber
+import timber.log.Timber.Forest.tag
 
 object LogBuffer {
 
     const val TAG_PLAYBACK = "Playback"
     const val TAG_CRASH = "Crash"
     const val TAG_BACKGROUND_TASKS = "BgTask"
+    const val TAG_RX_JAVA_DEFAULT_ERROR_HANDLER = "RxJavaDefaultErrorHandler"
     const val TAG_SUBSCRIPTIONS = "Subscriptions"
     const val TAG_INVALID_STATE = "InvalidState"
 
@@ -109,6 +111,10 @@ object LogBuffer {
         addLog(Log.INFO, tag, null, message, *args)
     }
 
+    fun i(tag: String, throwable: Throwable, message: String, vararg args: Any) {
+        addLog(Log.INFO, tag, throwable, message, *args)
+    }
+
     fun w(tag: String, message: String, vararg args: Any) {
         addLog(Log.WARN, tag, null, message, *args)
     }
@@ -126,7 +132,7 @@ object LogBuffer {
     }
 
     @Suppress("NAME_SHADOWING")
-    private fun addLog(priority: Int, tag: String, throwable: Throwable?, message: String?, vararg args: Any) {
+    fun addLog(priority: Int, tag: String, throwable: Throwable?, message: String?, vararg args: Any) {
         var message = message
         if (message != null && message.isEmpty()) {
             message = null

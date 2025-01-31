@@ -2,16 +2,22 @@ package au.com.shiftyjelly.pocketcasts.repositories.playback
 
 import android.content.Context
 import android.os.Handler
+import androidx.annotation.OptIn
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.exoplayer.DefaultRenderersFactory
+import androidx.media3.exoplayer.Renderer
+import androidx.media3.exoplayer.audio.AudioRendererEventListener
+import androidx.media3.exoplayer.audio.AudioSink
+import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.exoplayer.mediacodec.MediaCodecSelector
 import au.com.shiftyjelly.pocketcasts.models.type.TrimMode
 import au.com.shiftyjelly.pocketcasts.repositories.user.StatsManager
-import com.google.android.exoplayer2.DefaultRenderersFactory
-import com.google.android.exoplayer2.Renderer
-import com.google.android.exoplayer2.audio.AudioCapabilities
-import com.google.android.exoplayer2.audio.AudioRendererEventListener
-import com.google.android.exoplayer2.audio.AudioSink
-import com.google.android.exoplayer2.audio.DefaultAudioSink
-import com.google.android.exoplayer2.mediacodec.MediaCodecSelector
 
+/**
+ * An [AudioProcessor] that skips silence in the input stream. Input and output are 16-bit
+ * PCM.
+ */
+@OptIn(UnstableApi::class)
 class ShiftyRenderersFactory(context: Context?, statsManager: StatsManager, private var boostVolume: Boolean) : DefaultRenderersFactory(context!!) {
     private var playbackSpeed = 0f
     private var internalRenderer: ShiftyAudioRendererV2? = null
@@ -34,14 +40,12 @@ class ShiftyRenderersFactory(context: Context?, statsManager: StatsManager, priv
         internalRenderer?.customAudio?.playbackSpeed = playbackSpeed
     }
 
-    override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean, enableOffload: Boolean): AudioSink {
+    override fun buildAudioSink(context: Context, enableFloatOutput: Boolean, enableAudioTrackPlaybackParams: Boolean): AudioSink {
         processorChain = ShiftyAudioProcessorChain(customAudio)
-        return DefaultAudioSink.Builder()
-            .setAudioCapabilities(AudioCapabilities.getCapabilities(context))
+        return DefaultAudioSink.Builder(context)
             .setAudioProcessorChain(processorChain!!)
             .setEnableFloatOutput(enableFloatOutput)
             .setEnableAudioTrackPlaybackParams(enableAudioTrackPlaybackParams)
-            .setOffloadMode(if (enableOffload) DefaultAudioSink.OFFLOAD_MODE_ENABLED_GAPLESS_REQUIRED else DefaultAudioSink.OFFLOAD_MODE_DISABLED)
             .build()
     }
 
@@ -53,7 +57,7 @@ class ShiftyRenderersFactory(context: Context?, statsManager: StatsManager, priv
         audioSink: AudioSink,
         eventHandler: Handler,
         eventListener: AudioRendererEventListener,
-        out: ArrayList<Renderer>
+        out: ArrayList<Renderer>,
     ) {
         this.audioSink = audioSink
         internalRenderer = ShiftyAudioRendererV2(
@@ -62,7 +66,7 @@ class ShiftyRenderersFactory(context: Context?, statsManager: StatsManager, priv
             mediaCodecSelector,
             eventHandler,
             eventListener,
-            audioSink
+            audioSink,
         ).apply {
             customAudio.setBoostVolume(boostVolume)
             customAudio.playbackSpeed = playbackSpeed

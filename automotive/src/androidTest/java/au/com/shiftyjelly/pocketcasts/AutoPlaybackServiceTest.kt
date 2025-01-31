@@ -5,15 +5,18 @@ import android.os.IBinder
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.rule.ServiceTestRule
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
 import au.com.shiftyjelly.pocketcasts.models.entity.Playlist
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.to.SubscriptionStatus
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PODCASTS_ROOT
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackService
 import au.com.shiftyjelly.pocketcasts.repositories.playback.auto.AutoMediaId
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
 import au.com.shiftyjelly.pocketcasts.repositories.subscription.SubscriptionManager
+import java.util.Date
+import java.util.UUID
+import java.util.concurrent.TimeoutException
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -24,9 +27,6 @@ import org.junit.runner.RunWith
 import org.mockito.kotlin.any
 import org.mockito.kotlin.doReturn
 import org.mockito.kotlin.mock
-import java.util.Date
-import java.util.UUID
-import java.util.concurrent.TimeoutException
 
 @RunWith(AndroidJUnit4::class)
 class AutoPlaybackServiceTest {
@@ -39,7 +39,7 @@ class AutoPlaybackServiceTest {
     fun setup() {
         val serviceIntent = Intent(
             ApplicationProvider.getApplicationContext(),
-            AutoPlaybackService::class.java
+            AutoPlaybackService::class.java,
         )
 
         val binder: IBinder = serviceRule.bindService(serviceIntent)
@@ -70,7 +70,7 @@ class AutoPlaybackServiceTest {
     fun testLoadFilters() {
         runBlocking {
             val playlist = Playlist(uuid = UUID.randomUUID().toString(), title = "Test title", iconId = 0)
-            service.playlistManager = mock { on { findAll() }.doReturn(listOf(playlist)) }
+            service.playlistManager = mock { on { findAllBlocking() }.doReturn(listOf(playlist)) }
 
             val filtersRoot = service.loadFiltersRoot()
             assertTrue("Filters should not be empty", filtersRoot.isNotEmpty())
@@ -100,11 +100,11 @@ class AutoPlaybackServiceTest {
     fun testLoadPodcastEpisodes() {
         runBlocking {
             val podcast = Podcast(UUID.randomUUID().toString(), title = "Test podcast")
-            val episode = Episode(UUID.randomUUID().toString(), title = "Test episode", publishedDate = Date())
+            val episode = PodcastEpisode(UUID.randomUUID().toString(), title = "Test episode", publishedDate = Date())
 
-            service.playlistManager = mock { on { findByUuid(any()) }.doReturn(null) }
-            service.podcastManager = mock { on { runBlocking { findPodcastByUuidSuspend(any()) } }.doReturn(podcast) }
-            service.episodeManager = mock { on { findEpisodesByPodcastOrdered(any()) }.doReturn(listOf(episode)) }
+            service.playlistManager = mock { on { findByUuidBlocking(any()) }.doReturn(null) }
+            service.podcastManager = mock { on { runBlocking { findPodcastByUuid(any()) } }.doReturn(podcast) }
+            service.episodeManager = mock { on { findEpisodesByPodcastOrderedBlocking(any()) }.doReturn(listOf(episode)) }
 
             val episodes = service.loadEpisodeChildren(podcast.uuid)
             assertTrue("Episodes should have content", episodes.isNotEmpty())

@@ -16,18 +16,17 @@ import androidx.compose.material.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.DpSize
 import androidx.compose.ui.unit.dp
-import au.com.shiftyjelly.pocketcasts.compose.AppThemeWithBackground
+import au.com.shiftyjelly.pocketcasts.compose.AppTheme
 import au.com.shiftyjelly.pocketcasts.compose.buttons.RowButton
 import au.com.shiftyjelly.pocketcasts.compose.buttons.RowOutlinedButton
-import au.com.shiftyjelly.pocketcasts.compose.components.TextH20
 import au.com.shiftyjelly.pocketcasts.compose.components.TextH50
 import au.com.shiftyjelly.pocketcasts.compose.preview.ThemePreviewParameterProvider
 import au.com.shiftyjelly.pocketcasts.compose.theme
@@ -42,14 +41,12 @@ private val OutlinedBorder: BorderStroke
     get() = BorderStroke(2.dp, MaterialTheme.theme.colors.primaryText01)
 
 private val PillSize = DpSize(width = 56.dp, height = 4.dp)
-private val PillCornerRadius = 10.dp
-private const val PillAlpha = 0.2f
+private val PillCornerRadius = 3.dp
 
 class BottomSheetContentState(
     val content: Content,
 ) {
     data class Content(
-        val titleText: String,
         val imageContent: @Composable (() -> Unit)? = null,
         val summaryText: String,
         val primaryButton: Button.Primary,
@@ -81,22 +78,19 @@ fun BottomSheetContent(
     Box(
         modifier = modifier
             .fillMaxWidth()
+            .background(MaterialTheme.colors.background)
             .padding(ContentPadding),
-        contentAlignment = Alignment.TopCenter
+        contentAlignment = Alignment.TopCenter,
     ) {
         Column(
             modifier = modifier
                 .widthIn(max = ContentMaxWidthDp.dp),
-            horizontalAlignment = Alignment.CenterHorizontally
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
             val context = LocalContext.current
             val content = state.content
 
             Pill()
-
-            Spacer(modifier = modifier.height(32.dp))
-
-            TitleText(content)
 
             Spacer(modifier = modifier.height(16.dp))
 
@@ -124,22 +118,14 @@ fun BottomSheetContent(
 
 @Composable
 fun Pill(
+    backgroundColor: Color = MaterialTheme.theme.colors.primaryIcon02,
     modifier: Modifier = Modifier,
 ) {
     Box(
         modifier = modifier
             .size(PillSize)
             .clip(RoundedCornerShape(PillCornerRadius))
-            .alpha(PillAlpha)
-            .background(MaterialTheme.theme.colors.primaryText02)
-    )
-}
-
-@Composable
-private fun TitleText(content: BottomSheetContentState.Content) {
-    TextH20(
-        text = content.titleText,
-        color = MaterialTheme.theme.colors.primaryText01,
+            .background(backgroundColor),
     )
 }
 
@@ -147,8 +133,8 @@ private fun TitleText(content: BottomSheetContentState.Content) {
 private fun SummaryText(content: BottomSheetContentState.Content) {
     TextH50(
         text = content.summaryText,
-        color = MaterialTheme.theme.colors.primaryText02,
-        textAlign = TextAlign.Center
+        color = MaterialTheme.theme.colors.primaryText01,
+        textAlign = TextAlign.Center,
     )
 }
 
@@ -161,13 +147,13 @@ private fun ConfirmButton(
         text = primaryButton.label,
         colors = ButtonDefaults.buttonColors(
             backgroundColor = MaterialTheme.theme.colors.primaryText01,
-            contentColor = MaterialTheme.theme.colors.primaryInteractive02
+            contentColor = MaterialTheme.theme.colors.primaryInteractive02,
         ),
         includePadding = false,
         onClick = {
             onDismiss.invoke()
             primaryButton.onClick.invoke()
-        }
+        },
     )
 }
 
@@ -187,7 +173,7 @@ private fun DismissButton(
         onClick = {
             onDismiss.invoke()
             secondaryButton.onClick?.invoke()
-        }
+        },
     )
 }
 
@@ -196,22 +182,21 @@ private fun DismissButton(
 private fun BottomSheetContentPreview(
     @PreviewParameter(ThemePreviewParameterProvider::class) themeType: Theme.ThemeType,
 ) {
-    AppThemeWithBackground(themeType) {
+    AppTheme(themeType) {
         BottomSheetContent(
             state = BottomSheetContentState(
                 content = BottomSheetContentState.Content(
-                    titleText = "Heading",
                     summaryText = "Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod tempor incididunt.",
                     primaryButton = BottomSheetContentState.Content.Button.Primary(
                         label = "Confirm",
-                        onClick = {}
+                        onClick = {},
                     ),
                     secondaryButton = BottomSheetContentState.Content.Button.Secondary(
                         label = "Not now",
                     ),
-                )
+                ),
             ),
-            onDismiss = {}
+            onDismiss = {},
         )
     }
 }

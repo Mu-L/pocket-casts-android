@@ -1,6 +1,7 @@
 package au.com.shiftyjelly.pocketcasts.podcasts.view.folders
 
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -35,8 +36,7 @@ import au.com.shiftyjelly.pocketcasts.compose.components.rememberViewInteropNest
 import au.com.shiftyjelly.pocketcasts.compose.theme
 import au.com.shiftyjelly.pocketcasts.localization.extensions.getStringPluralPodcasts
 import au.com.shiftyjelly.pocketcasts.models.entity.Folder
-import au.com.shiftyjelly.pocketcasts.podcasts.R
-import au.com.shiftyjelly.pocketcasts.podcasts.view.compose.components.LargePageTitle
+import au.com.shiftyjelly.pocketcasts.podcasts.view.components.LargePageTitle
 import au.com.shiftyjelly.pocketcasts.ui.extensions.getColor
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
@@ -46,7 +46,7 @@ fun FolderChooserPage(
     podcastUuid: String?,
     onCloseClick: () -> Unit,
     onNewFolderClick: () -> Unit,
-    viewModel: FolderEditViewModel
+    viewModel: FolderEditViewModel,
 ) {
     val state: FolderEditViewModel.State by viewModel.state.collectAsState()
     Surface(modifier = Modifier.nestedScroll(rememberViewInteropNestedScrollConnection())) {
@@ -54,7 +54,7 @@ fun FolderChooserPage(
             BottomSheetAppBar(
                 title = null,
                 navigationButton = NavigationButton.Close,
-                onNavigationClick = onCloseClick
+                onNavigationClick = onCloseClick,
             )
             FolderList(
                 currentFolder = state.folder,
@@ -66,12 +66,15 @@ fun FolderChooserPage(
                     }
                 },
                 onNewFolderClick = onNewFolderClick,
-                modifier = Modifier.weight(1f)
+                modifier = Modifier.weight(1f),
             )
-            Card(elevation = 8.dp) {
+            Card(
+                elevation = if (isSystemInDarkTheme()) 0.dp else 8.dp,
+                backgroundColor = Color.Transparent,
+            ) {
                 RowButton(
                     text = stringResource(LR.string.done),
-                    onClick = { onCloseClick() }
+                    onClick = { onCloseClick() },
                 )
             }
         }
@@ -85,7 +88,7 @@ private fun FolderList(
     folderUuidToPodcastCount: Map<String?, Int>,
     onFolderClick: (Folder) -> Unit,
     onNewFolderClick: () -> Unit,
-    modifier: Modifier
+    modifier: Modifier,
 ) {
     LazyColumn(modifier = modifier) {
         item {
@@ -99,8 +102,6 @@ private fun FolderList(
                 FolderMoveRow {
                     onNewFolderClick()
                 }
-                HorizontalDivider()
-                Spacer(modifier = Modifier.height(24.dp))
                 HorizontalDivider()
             }
         }
@@ -126,26 +127,26 @@ private fun FolderSelectRow(folder: Folder, podcastCount: Int, selected: Boolean
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .height(64.dp)
-            .clickable { onClick() }
+            .clickable { onClick() },
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.width(56.dp)
+            modifier = Modifier.width(56.dp),
         ) {
             Icon(
                 painter = painterResource(IR.drawable.ic_folder),
                 contentDescription = null,
-                tint = Color(folder.getColor(context))
+                tint = Color(folder.getColor(context)),
             )
         }
         Column(modifier = Modifier.weight(1f)) {
             TextH30(
                 text = folder.name,
-                maxLines = 1
+                maxLines = 1,
             )
             TextH70(
                 text = context.resources.getStringPluralPodcasts(podcastCount),
-                color = MaterialTheme.theme.colors.primaryText02
+                color = MaterialTheme.theme.colors.primaryText02,
             )
         }
         if (selected) {
@@ -153,7 +154,7 @@ private fun FolderSelectRow(folder: Folder, podcastCount: Int, selected: Boolean
                 painter = painterResource(id = IR.drawable.ic_tick),
                 contentDescription = null,
                 tint = MaterialTheme.theme.colors.primaryIcon01,
-                modifier = Modifier.padding(end = 21.dp)
+                modifier = Modifier.padding(end = 21.dp),
             )
         }
     }
@@ -165,23 +166,23 @@ fun FolderMoveRow(modifier: Modifier = Modifier, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
         modifier = modifier
             .height(64.dp)
-            .clickable { onClick() }
+            .clickable { onClick() },
     ) {
         Box(
             contentAlignment = Alignment.Center,
-            modifier = Modifier.width(56.dp)
+            modifier = Modifier.width(56.dp),
         ) {
             Icon(
-                painter = painterResource(R.drawable.folder_create),
+                painter = painterResource(IR.drawable.ic_folder_plus),
                 contentDescription = null,
-                tint = MaterialTheme.theme.colors.primaryInteractive01
+                tint = MaterialTheme.theme.colors.primaryInteractive01,
             )
         }
         TextH30(
             text = stringResource(LR.string.new_folder),
             color = MaterialTheme.theme.colors.primaryInteractive01,
             maxLines = 1,
-            modifier = Modifier.weight(1f)
+            modifier = Modifier.weight(1f),
         )
     }
 }

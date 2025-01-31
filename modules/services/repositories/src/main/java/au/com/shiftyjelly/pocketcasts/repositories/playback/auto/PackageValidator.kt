@@ -30,11 +30,11 @@ import androidx.annotation.XmlRes
 import androidx.core.app.NotificationManagerCompat
 import androidx.media.MediaBrowserServiceCompat
 import au.com.shiftyjelly.pocketcasts.localization.BuildConfig
-import org.xmlpull.v1.XmlPullParserException
-import timber.log.Timber
 import java.io.IOException
 import java.security.MessageDigest
 import java.security.NoSuchAlgorithmException
+import org.xmlpull.v1.XmlPullParserException
+import timber.log.Timber
 
 /**
  * Validates that the calling package is authorized to browse a [MediaBrowserServiceCompat].
@@ -165,14 +165,14 @@ class PackageValidator(context: Context, @XmlRes xmlResId: Int) {
     private fun buildCallerInfo(callingPackage: String): CallerPackageInfo? {
         val packageInfo = getPackageInfo(callingPackage) ?: return null
 
-        val appName = packageInfo.applicationInfo.loadLabel(packageManager).toString()
-        val uid = packageInfo.applicationInfo.uid
+        val appName = packageInfo.applicationInfo?.loadLabel(packageManager)?.toString() ?: return null
+        val uid = packageInfo.applicationInfo?.uid ?: return null
         val signature = getSignature(packageInfo)
 
-        val requestedPermissions = packageInfo.requestedPermissions
-        val permissionFlags = packageInfo.requestedPermissionsFlags
+        val requestedPermissions = packageInfo.requestedPermissions ?: emptyArray()
+        val permissionFlags = packageInfo.requestedPermissionsFlags ?: IntArray(requestedPermissions.size)
         val activePermissions = mutableSetOf<String>()
-        requestedPermissions?.forEachIndexed { index, permission ->
+        requestedPermissions.forEachIndexed { index, permission ->
             if (permissionFlags[index] and REQUESTED_PERMISSION_GRANTED != 0) {
                 activePermissions += permission
             }
@@ -193,7 +193,7 @@ class PackageValidator(context: Context, @XmlRes xmlResId: Int) {
     private fun getPackageInfo(callingPackage: String): PackageInfo? =
         packageManager.getPackageInfo(
             callingPackage,
-            PackageManager.GET_SIGNATURES or PackageManager.GET_PERMISSIONS
+            PackageManager.GET_SIGNATURES or PackageManager.GET_PERMISSIONS,
         )
 
     /**
@@ -206,18 +206,19 @@ class PackageValidator(context: Context, @XmlRes xmlResId: Int) {
      * returns `null` as the signature.
      */
     @Suppress("DEPRECATION")
-    private fun getSignature(packageInfo: PackageInfo): String? =
-        if (packageInfo.signatures == null || packageInfo.signatures.size != 1) {
+    private fun getSignature(packageInfo: PackageInfo): String? {
+        val signatures = packageInfo.signatures
+        return if (signatures == null || signatures.size != 1) {
             // Security best practices dictate that an app should be signed with exactly one (1)
             // signature. Because of this, if there are multiple signatures, reject it.
             null
         } else {
-            val certificate = packageInfo.signatures[0].toByteArray()
+            val certificate = signatures[0].toByteArray()
             getSignatureSha256(certificate)
         }
+    }
 
     private fun buildCertificateAllowList(parser: XmlResourceParser): Map<String, KnownCallerInfo> {
-
         val certificateAllowList = LinkedHashMap<String, KnownCallerInfo>()
         try {
             var eventType = parser.next()
@@ -323,12 +324,12 @@ class PackageValidator(context: Context, @XmlRes xmlResId: Int) {
     private data class KnownCallerInfo(
         internal val name: String,
         internal val packageName: String,
-        internal val signatures: MutableSet<KnownSignature>
+        internal val signatures: MutableSet<KnownSignature>,
     )
 
     private data class KnownSignature(
         internal val signature: String,
-        internal val release: Boolean
+        internal val release: Boolean,
     )
 
     /**
@@ -340,7 +341,7 @@ class PackageValidator(context: Context, @XmlRes xmlResId: Int) {
         internal val packageName: String,
         internal val uid: Int,
         internal val signature: String?,
-        internal val permissions: Set<String>
+        internal val permissions: Set<String>,
     )
 }
 

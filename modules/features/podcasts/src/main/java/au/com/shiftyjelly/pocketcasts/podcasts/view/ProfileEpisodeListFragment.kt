@@ -8,43 +8,69 @@ import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.app.AppCompatActivity
 import androidx.appcompat.widget.Toolbar
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.padding
+import androidx.compose.material.MaterialTheme
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.unit.dp
 import androidx.core.view.isVisible
+import androidx.core.view.updatePadding
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.viewModels
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
 import androidx.recyclerview.widget.LinearLayoutManager
 import androidx.recyclerview.widget.RecyclerView
 import androidx.recyclerview.widget.SimpleItemAnimator
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
+import au.com.shiftyjelly.pocketcasts.compose.AppTheme
+import au.com.shiftyjelly.pocketcasts.compose.CallOnce
+import au.com.shiftyjelly.pocketcasts.compose.theme
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeViewSource
 import au.com.shiftyjelly.pocketcasts.podcasts.R
 import au.com.shiftyjelly.pocketcasts.podcasts.databinding.FragmentProfileEpisodeListBinding
+import au.com.shiftyjelly.pocketcasts.podcasts.view.ProfileEpisodeListViewModel.State
 import au.com.shiftyjelly.pocketcasts.podcasts.view.components.PlayButton
-import au.com.shiftyjelly.pocketcasts.podcasts.view.episode.EpisodeFragment
+import au.com.shiftyjelly.pocketcasts.podcasts.view.episode.EpisodeContainerFragment
 import au.com.shiftyjelly.pocketcasts.podcasts.view.podcast.EpisodeListAdapter
+import au.com.shiftyjelly.pocketcasts.podcasts.viewmodel.EpisodeListBookmarkViewModel
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
+import au.com.shiftyjelly.pocketcasts.preferences.model.ArtworkConfiguration.Element
+import au.com.shiftyjelly.pocketcasts.preferences.model.AutoPlaySource
+import au.com.shiftyjelly.pocketcasts.repositories.bookmark.BookmarkManager
 import au.com.shiftyjelly.pocketcasts.repositories.download.DownloadManager
-import au.com.shiftyjelly.pocketcasts.repositories.images.PodcastImageLoader
+import au.com.shiftyjelly.pocketcasts.repositories.images.PocketCastsImageRequestFactory
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.playback.UpNextQueue
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
 import au.com.shiftyjelly.pocketcasts.settings.AutoDownloadSettingsFragment
 import au.com.shiftyjelly.pocketcasts.settings.ManualCleanupFragment
+import au.com.shiftyjelly.pocketcasts.settings.viewmodel.ManualCleanupViewModel
+import au.com.shiftyjelly.pocketcasts.ui.extensions.themed
 import au.com.shiftyjelly.pocketcasts.ui.helper.FragmentHostListener
-import au.com.shiftyjelly.pocketcasts.ui.images.PodcastImageLoaderThemed
 import au.com.shiftyjelly.pocketcasts.utils.extensions.dpToPx
+import au.com.shiftyjelly.pocketcasts.utils.featureflag.Feature
+import au.com.shiftyjelly.pocketcasts.utils.featureflag.FeatureFlag
+import au.com.shiftyjelly.pocketcasts.utils.isDeviceRunningOnLowStorage
 import au.com.shiftyjelly.pocketcasts.views.dialog.ConfirmationDialog
 import au.com.shiftyjelly.pocketcasts.views.dialog.OptionsDialog
 import au.com.shiftyjelly.pocketcasts.views.extensions.setup
 import au.com.shiftyjelly.pocketcasts.views.fragments.BaseFragment
 import au.com.shiftyjelly.pocketcasts.views.helper.EpisodeItemTouchHelper
 import au.com.shiftyjelly.pocketcasts.views.helper.NavigationIcon.BackArrow
+import au.com.shiftyjelly.pocketcasts.views.helper.SwipeButtonLayoutFactory
+import au.com.shiftyjelly.pocketcasts.views.helper.SwipeButtonLayoutViewModel
+import au.com.shiftyjelly.pocketcasts.views.multiselect.MultiSelectEpisodesHelper
 import au.com.shiftyjelly.pocketcasts.views.multiselect.MultiSelectHelper
 import dagger.hilt.android.AndroidEntryPoint
 import javax.inject.Inject
+import kotlinx.coroutines.launch
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 import au.com.shiftyjelly.pocketcasts.views.R as VR
@@ -53,18 +79,23 @@ private const val ARG_MODE = "profile_list_mode"
 
 @AndroidEntryPoint
 class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListener {
-    sealed class Mode(val index: Int, val showMenu: Boolean) {
-        object Downloaded : Mode(0, true)
-        object Starred : Mode(1, false)
-        object History : Mode(2, true)
+    sealed class Mode(
+        val index: Int,
+        val showMenu: Boolean,
+        val showSearch: Boolean,
+        val source: SourceView = SourceView.UNKNOWN,
+    ) {
+        data object Downloaded : Mode(0, true, false, SourceView.DOWNLOADS)
+        data object Starred : Mode(1, false, false, SourceView.STARRED)
+        data object History : Mode(2, true, true, SourceView.LISTENING_HISTORY)
     }
 
     companion object {
+        const val OPTION_KEY = "option"
+        const val CLEAN_UP = "clean_up"
         private const val SELECT_ALL_KEY = "select_all"
-        private const val OPTION_KEY = "option"
         private const val AUTO_DOWNLOAD_SETTINGS = "auto_download_settings"
         private const val STOP_ALL_DOWNLOADS = "stop_all_downloads"
-        private const val CLEAN_UP = "clean_up"
         private const val CLEAR_HISTORY = "clear_history"
 
         fun newInstance(mode: Mode): ProfileEpisodeListFragment {
@@ -77,17 +108,38 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
         }
     }
 
-    @Inject lateinit var downloadManager: DownloadManager
-    @Inject lateinit var playbackManager: PlaybackManager
-    @Inject lateinit var episodeManager: EpisodeManager
-    @Inject lateinit var playButtonListener: PlayButton.OnClickListener
-    @Inject lateinit var settings: Settings
-    @Inject lateinit var upNextQueue: UpNextQueue
-    @Inject lateinit var multiSelectHelper: MultiSelectHelper
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
+    @Inject
+    lateinit var downloadManager: DownloadManager
+
+    @Inject
+    lateinit var playbackManager: PlaybackManager
+
+    @Inject
+    lateinit var episodeManager: EpisodeManager
+
+    @Inject
+    lateinit var playButtonListener: PlayButton.OnClickListener
+
+    @Inject
+    lateinit var settings: Settings
+
+    @Inject
+    lateinit var upNextQueue: UpNextQueue
+
+    @Inject
+    lateinit var multiSelectHelper: MultiSelectEpisodesHelper
+
+    @Inject
+    lateinit var analyticsTracker: AnalyticsTracker
+
+    @Inject
+    lateinit var bookmarkManager: BookmarkManager
 
     private val viewModel: ProfileEpisodeListViewModel by viewModels()
-    private lateinit var imageLoader: PodcastImageLoader
+    private val cleanUpViewModel: ManualCleanupViewModel by viewModels()
+    private val episodeListBookmarkViewModel: EpisodeListBookmarkViewModel by viewModels()
+    private val swipeButtonLayoutViewModel: SwipeButtonLayoutViewModel by viewModels()
+    private lateinit var imageRequestFactory: PocketCastsImageRequestFactory
     private var binding: FragmentProfileEpisodeListBinding? = null
 
     val mode: Mode
@@ -98,19 +150,57 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
             else -> throw IllegalStateException("Unknown mode")
         }
 
-    val onRowClick = { episode: Playable ->
-        if (episode is Episode) {
+    val onRowClick = { episode: BaseEpisode ->
+        if (episode is PodcastEpisode) {
             val episodeViewSource = when (mode) {
                 Mode.Downloaded -> EpisodeViewSource.DOWNLOADS
                 Mode.History -> EpisodeViewSource.LISTENING_HISTORY
                 Mode.Starred -> EpisodeViewSource.STARRED
             }
-            val fragment = EpisodeFragment.newInstance(episode = episode, source = episodeViewSource)
+            val fragment = EpisodeContainerFragment.newInstance(episode = episode, source = episodeViewSource)
             fragment.show(parentFragmentManager, "episode_card")
         }
     }
 
-    val adapter by lazy { EpisodeListAdapter(downloadManager, playbackManager, upNextQueue, settings, onRowClick, playButtonListener, imageLoader, multiSelectHelper, childFragmentManager) }
+    val adapter by lazy {
+        EpisodeListAdapter(
+            bookmarkManager = bookmarkManager,
+            downloadManager = downloadManager,
+            playbackManager = playbackManager,
+            upNextQueue = upNextQueue,
+            settings = settings,
+            onRowClick = onRowClick,
+            playButtonListener = playButtonListener,
+            imageRequestFactory = imageRequestFactory,
+            multiSelectHelper = multiSelectHelper,
+            fragmentManager = childFragmentManager,
+            swipeButtonLayoutFactory = SwipeButtonLayoutFactory(
+                swipeButtonLayoutViewModel = swipeButtonLayoutViewModel,
+                onItemUpdated = ::lazyNotifyItemChanged,
+                defaultUpNextSwipeAction = { settings.upNextSwipe.value },
+                fragmentManager = parentFragmentManager,
+                swipeSource = when (mode) {
+                    Mode.Downloaded -> EpisodeItemTouchHelper.SwipeSource.DOWNLOADS
+                    Mode.History -> EpisodeItemTouchHelper.SwipeSource.LISTENING_HISTORY
+                    Mode.Starred -> EpisodeItemTouchHelper.SwipeSource.STARRED
+                },
+            ),
+            artworkContext = when (mode) {
+                Mode.Downloaded -> Element.Downloads
+                Mode.History -> Element.ListeningHistory
+                Mode.Starred -> Element.Starred
+            },
+        )
+    }
+
+    // Cannot inline this because the compiler gets confused
+    // when the adapter's constructor includes references to the adapter
+    private fun lazyNotifyItemChanged(
+        @Suppress("UNUSED_PARAMETER") episode: BaseEpisode,
+        index: Int,
+    ) {
+        adapter.notifyItemChanged(index)
+    }
 
     override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
         binding = FragmentProfileEpisodeListBinding.inflate(inflater, container, false)
@@ -120,12 +210,10 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
     override fun onAttach(context: Context) {
         super.onAttach(context)
 
-        imageLoader = PodcastImageLoaderThemed(context).apply {
-            radiusPx = 4.dpToPx(context)
-        }.smallPlaceholder()
+        imageRequestFactory = PocketCastsImageRequestFactory(context, cornerRadius = 4).smallSize().themed()
 
-        playButtonListener.source = getAnalyticsEventSource()
-        multiSelectHelper.source = getAnalyticsEventSource()
+        playButtonListener.source = mode.source
+        multiSelectHelper.source = mode.source
     }
 
     override fun onPause() {
@@ -139,10 +227,16 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
     override fun onResume() {
         super.onResume()
         binding?.recyclerView?.adapter = adapter
+        when (mode) {
+            Mode.Downloaded -> AutoPlaySource.Downloads
+            Mode.History -> AutoPlaySource.None
+            Mode.Starred -> AutoPlaySource.Starred
+        }.let { settings.trackingAutoPlaySource.set(it, updateModifiedAt = false) }
     }
 
     override fun onDestroyView() {
         binding?.recyclerView?.adapter = null
+        multiSelectHelper.cleanup()
         super.onDestroyView()
         binding = null
     }
@@ -157,28 +251,63 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
             it.layoutManager = LinearLayoutManager(it.context, RecyclerView.VERTICAL, false)
             it.adapter = adapter
             (it.itemAnimator as SimpleItemAnimator).changeDuration = 0
-            val itemTouchHelper = EpisodeItemTouchHelper(this::episodeSwipedRightItem1, this::episodeSwipedRightItem2, viewModel::episodeSwiped)
+            val itemTouchHelper = EpisodeItemTouchHelper()
             itemTouchHelper.attachToRecyclerView(it)
         }
 
-        viewModel.episodeList.observe(viewLifecycleOwner) {
-            adapter.submitList(it)
-            binding?.emptyLayout?.isVisible = it.isEmpty()
+        binding?.layoutSearch?.setContent {
+            ProfileEpisodeListSearchBar(
+                activeTheme = theme.activeTheme,
+            )
         }
 
-        val emptyTitleId = when (mode) {
-            is Mode.Downloaded -> LR.string.profile_empty_downloaded
-            is Mode.Starred -> LR.string.profile_empty_starred
-            is Mode.History -> LR.string.profile_empty_history
-        }
-        val emptySummaryId = when (mode) {
-            is Mode.Downloaded -> LR.string.profile_empty_downloaded_summary
-            is Mode.Starred -> LR.string.profile_empty_starred_summary
-            is Mode.History -> LR.string.profile_empty_history_summary
+        if (mode is Mode.Downloaded && FeatureFlag.isEnabled(Feature.MANAGE_DOWNLOADED_EPISODES)) {
+            viewLifecycleOwner.lifecycleScope.launch {
+                viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                    cleanUpViewModel.state.collect { state ->
+                        updateManageDownloadsCard(state.diskSpaceViews.sumOf { it.episodesBytesSize })
+                    }
+                }
+            }
+        } else {
+            binding?.manageDownloadsCard?.isVisible = false
         }
 
-        binding?.lblEmptyTitle?.setText(emptyTitleId)
-        binding?.lblEmptySummary?.setText(emptySummaryId)
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                viewModel.state.collect { state ->
+                    when (state) {
+                        is State.Empty -> {
+                            binding?.recyclerView?.isVisible = false
+                            binding?.manageDownloadsCard?.isVisible = false
+                            binding?.emptyLayout?.isVisible = true
+                            binding?.lblEmptyTitle?.setText(state.titleRes)
+                            binding?.lblEmptySummary?.setText(state.summaryRes)
+                        }
+
+                        State.Loading -> Unit
+
+                        is State.Loaded -> {
+                            binding?.recyclerView?.updatePadding(
+                                top = if (state.showSearchBar) 0 else 16.dpToPx(requireContext()),
+                            )
+                            binding?.recyclerView?.isVisible = true
+                            binding?.emptyLayout?.isVisible = false
+                            adapter.submitList(state.results)
+                        }
+                    }
+                }
+            }
+        }
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                episodeListBookmarkViewModel.stateFlow.collect {
+                    adapter.setBookmarksAvailable(it.isBookmarkFeatureAvailable)
+                    adapter.notifyDataSetChanged()
+                }
+            }
+        }
 
         multiSelectHelper.isMultiSelectingLive.observe(viewLifecycleOwner) { isMultiSelecting ->
             val wasMultiSelecting = binding?.multiSelectToolbar?.isVisible == true
@@ -196,9 +325,9 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
 
             adapter.notifyDataSetChanged()
         }
-        multiSelectHelper.listener = object : MultiSelectHelper.Listener {
+        multiSelectHelper.listener = object : MultiSelectHelper.Listener<BaseEpisode> {
             override fun multiSelectSelectAll() {
-                val episodes = viewModel.episodeList.value
+                val episodes = (viewModel.state.value as? State.Loaded)?.results
                 if (episodes != null) {
                     multiSelectHelper.selectAllInList(episodes)
                     adapter.notifyDataSetChanged()
@@ -207,18 +336,18 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
             }
 
             override fun multiSelectSelectNone() {
-                val episodes = viewModel.episodeList.value
+                val episodes = (viewModel.state.value as? State.Loaded)?.results
                 if (episodes != null) {
-                    episodes.forEach { multiSelectHelper.deselect(it) }
+                    multiSelectHelper.deselectAllInList(episodes)
                     adapter.notifyDataSetChanged()
                     trackSelectAll(false)
                 }
             }
 
-            override fun multiSelectSelectAllUp(episode: Playable) {
-                val episodes = viewModel.episodeList.value
+            override fun multiSelectSelectAllUp(multiSelectable: BaseEpisode) {
+                val episodes = (viewModel.state.value as? State.Loaded)?.results
                 if (episodes != null) {
-                    val startIndex = episodes.indexOf(episode)
+                    val startIndex = episodes.indexOf(multiSelectable)
                     if (startIndex > -1) {
                         multiSelectHelper.selectAllInList(episodes.subList(0, startIndex + 1))
                         trackSelectAllAbove()
@@ -228,10 +357,10 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
                 }
             }
 
-            override fun multiSelectSelectAllDown(episode: Playable) {
-                val episodes = viewModel.episodeList.value
+            override fun multiSelectSelectAllDown(multiSelectable: BaseEpisode) {
+                val episodes = (viewModel.state.value as? State.Loaded)?.results
                 if (episodes != null) {
-                    val startIndex = episodes.indexOf(episode)
+                    val startIndex = episodes.indexOf(multiSelectable)
                     if (startIndex > -1) {
                         multiSelectHelper.selectAllInList(episodes.subList(startIndex, episodes.size))
                         trackSelectAllBelow()
@@ -240,9 +369,48 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
                     adapter.notifyDataSetChanged()
                 }
             }
+
+            override fun multiDeselectAllBelow(multiSelectable: BaseEpisode) {
+                val episodes = (viewModel.state.value as? State.Loaded)?.results
+                if (episodes != null) {
+                    val startIndex = episodes.indexOf(multiSelectable)
+                    if (startIndex > -1) {
+                        val episodesBelow = episodes.subList(startIndex, episodes.size)
+                        multiSelectHelper.deselectAllInList(episodesBelow)
+                        adapter.notifyDataSetChanged()
+                    }
+                }
+            }
+
+            override fun multiDeselectAllAbove(multiSelectable: BaseEpisode) {
+                val episodes = (viewModel.state.value as? State.Loaded)?.results
+                if (episodes != null) {
+                    val startIndex = episodes.indexOf(multiSelectable)
+                    if (startIndex > -1) {
+                        val episodesAbove = episodes.subList(0, startIndex + 1)
+                        multiSelectHelper.deselectAllInList(episodesAbove)
+                        adapter.notifyDataSetChanged()
+                    }
+                }
+            }
         }
         multiSelectHelper.coordinatorLayout = (activity as FragmentHostListener).snackBarView()
-        binding?.multiSelectToolbar?.setup(viewLifecycleOwner, multiSelectHelper, menuRes = null, fragmentManager = parentFragmentManager)
+
+        val sourceView = when (mode) {
+            Mode.Downloaded -> SourceView.DOWNLOADS
+            Mode.History -> SourceView.LISTENING_HISTORY
+            Mode.Starred -> SourceView.STARRED
+        }
+
+        binding?.multiSelectToolbar?.setup(viewLifecycleOwner, multiSelectHelper, menuRes = null, activity = requireActivity(), sourceView = sourceView)
+
+        viewLifecycleOwner.lifecycleScope.launch {
+            viewLifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+                settings.bottomInset.collect {
+                    binding?.recyclerView?.updatePadding(bottom = it)
+                }
+            }
+        }
     }
 
     private fun updateToolbar() {
@@ -257,9 +425,49 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
             navigationIcon = BackArrow,
             activity = activity,
             theme = theme,
-            menu = if (mode.showMenu) R.menu.menu_profile_list else null
+            menu = if (mode.showMenu) R.menu.menu_profile_list else null,
         )
         toolbar.setOnMenuItemClickListener(this)
+    }
+
+    private suspend fun updateManageDownloadsCard(downloadedEpisodesSize: Long) {
+        binding?.manageDownloadsCard?.apply {
+            isVisible = downloadedEpisodesSize != 0L && isDeviceRunningOnLowStorage() && settings.shouldShowLowStorageBannerAfterSnooze()
+            if (isVisible) {
+                setContent {
+                    AppTheme(theme.activeTheme) {
+                        CallOnce {
+                            analyticsTracker.track(AnalyticsEvent.FREE_UP_SPACE_BANNER_SHOWN)
+                        }
+                        Box(
+                            modifier = Modifier
+                                .background(color = MaterialTheme.theme.colors.primaryUi02)
+                                .padding(start = 16.dp, end = 16.dp, top = 16.dp),
+                        ) {
+                            ManageDownloadsCard(
+                                totalDownloadSize = downloadedEpisodesSize,
+                                onManageDownloadsClick = {
+                                    analyticsTracker.track(AnalyticsEvent.FREE_UP_SPACE_MANAGE_DOWNLOADS_TAPPED, mapOf("source" to SourceView.DOWNLOADS.analyticsValue))
+                                    showFragment(ManualCleanupFragment.newInstance())
+                                },
+                                onDismissClick = {
+                                    onDismissManageDownloadTapped()
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    private fun onDismissManageDownloadTapped() {
+        analyticsTracker.track(
+            AnalyticsEvent.FREE_UP_SPACE_MAYBE_LATER_TAPPED,
+            mapOf("source" to SourceView.DOWNLOADS.analyticsValue),
+        )
+        settings.setDismissLowStorageBannerTime(System.currentTimeMillis())
+        binding?.manageDownloadsCard?.isVisible = false
     }
 
     override fun onMenuItemClick(item: MenuItem): Boolean {
@@ -308,28 +516,15 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
             .setTitle(resources.getString(LR.string.profile_clear_listening_history_title))
             .setSummary(resources.getString(LR.string.profile_clear_cannot_be_undone))
             .setButtonType(ConfirmationDialog.ButtonType.Danger(resources.getString(LR.string.profile_clear_all)))
-            .setOnConfirm { viewModel.clearAllEpisodeHistory() }
+            .setOnConfirm {
+                analyticsTracker.track(AnalyticsEvent.LISTENING_HISTORY_CLEAR_HISTORY_BUTTON_TAPPED)
+                viewModel.clearAllEpisodeHistory()
+            }
         dialog.show(parentFragmentManager, "clear_history")
     }
 
     private fun showFragment(fragment: Fragment) {
         (activity as? FragmentHostListener)?.addFragment(fragment)
-    }
-
-    private fun episodeSwipedRightItem1(episode: Playable, index: Int) {
-        when (settings.getUpNextSwipeAction()) {
-            Settings.UpNextAction.PLAY_NEXT -> viewModel.episodeSwipeUpNext(episode)
-            Settings.UpNextAction.PLAY_LAST -> viewModel.episodeSwipeUpLast(episode)
-        }
-        adapter.notifyItemChanged(index)
-    }
-
-    private fun episodeSwipedRightItem2(episode: Playable, index: Int) {
-        when (settings.getUpNextSwipeAction()) {
-            Settings.UpNextAction.PLAY_NEXT -> viewModel.episodeSwipeUpLast(episode)
-            Settings.UpNextAction.PLAY_LAST -> viewModel.episodeSwipeUpNext(episode)
-        }
-        adapter.notifyItemChanged(index)
     }
 
     override fun onBackPressed(): Boolean {
@@ -392,11 +587,5 @@ class ProfileEpisodeListFragment : BaseFragment(), Toolbar.OnMenuItemClickListen
             Mode.Starred -> AnalyticsEvent.STARRED_MULTI_SELECT_EXITED
         }
         analyticsTracker.track(analyticsEvent)
-    }
-
-    private fun getAnalyticsEventSource() = when (mode) {
-        Mode.Downloaded -> AnalyticsSource.DOWNLOADS
-        Mode.Starred -> AnalyticsSource.STARRED
-        Mode.History -> AnalyticsSource.LISTENING_HISTORY
     }
 }

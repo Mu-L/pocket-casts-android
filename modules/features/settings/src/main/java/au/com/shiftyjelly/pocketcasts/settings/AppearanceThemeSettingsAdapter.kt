@@ -19,10 +19,10 @@ import au.com.shiftyjelly.pocketcasts.ui.R as UR
 
 class AppearanceThemeSettingsAdapter(
     private var mainWidth: Int?,
-    private var isPlusSignedIn: Boolean,
+    private var isPlusOrPatronSignedIn: Boolean,
     private var selectedTheme: Theme.ThemeType,
     private var list: List<Theme.ThemeType>,
-    private val clickListener: (Theme.ThemeType, Theme.ThemeType, Boolean) -> Unit
+    private val clickListener: (Theme.ThemeType, Theme.ThemeType, Boolean) -> Unit,
 ) : RecyclerView.Adapter<AppearanceThemeSettingsAdapter.ViewHolder>() {
 
     override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): ViewHolder {
@@ -53,7 +53,7 @@ class AppearanceThemeSettingsAdapter(
     override fun getItemCount() = list.size
 
     fun updatePlusSignedIn(value: Boolean) {
-        isPlusSignedIn = value
+        isPlusOrPatronSignedIn = value
         notifyDataSetChanged()
     }
 
@@ -84,7 +84,7 @@ class AppearanceThemeSettingsAdapter(
         }
 
         fun bind(theme: Theme.ThemeType, selected: Boolean) {
-            val showOption = !theme.isPlus || isPlusSignedIn
+            val showOption = !theme.isPlus || isPlusOrPatronSignedIn
             binding.themeItem.alpha = if (showOption) 1.0f else 0.65f
 
             val drawable = AppCompatResources.getDrawable(itemView.context, theme.iconResourceId)
@@ -93,7 +93,7 @@ class AppearanceThemeSettingsAdapter(
             if (showOption && selected) {
                 tickDrawable = AppCompatResources.getDrawable(itemView.context, R.drawable.ic_circle_tick)
             } else if (!showOption) {
-                tickDrawable = AppCompatResources.getDrawable(itemView.context, R.drawable.ic_plus_bubble)
+                tickDrawable = AppCompatResources.getDrawable(itemView.context, R.drawable.ic_locked_plus)
             }
             binding.imgTick.setImageDrawable(tickDrawable)
             binding.imgTick.contentDescription = binding.imgTick.resources.getString(if (selected) LR.string.on else LR.string.off)
@@ -109,9 +109,13 @@ class AppearanceThemeSettingsAdapter(
             }
             val beforeTheme = selectedTheme
             val afterTheme = list[bindingAdapterPosition]
-            val validTheme = !afterTheme.isPlus || isPlusSignedIn
+            val validTheme = !afterTheme.isPlus || isPlusOrPatronSignedIn
 
-            selectedTheme = afterTheme
+            selectedTheme = if (validTheme) {
+                afterTheme
+            } else {
+                beforeTheme
+            }
             clickListener(beforeTheme, afterTheme, validTheme)
             notifyDataSetChanged()
         }

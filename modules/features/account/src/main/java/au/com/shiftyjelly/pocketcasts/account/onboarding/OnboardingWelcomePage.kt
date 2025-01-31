@@ -1,5 +1,6 @@
 package au.com.shiftyjelly.pocketcasts.account.onboarding
 
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.annotation.DrawableRes
 import androidx.annotation.StringRes
@@ -36,51 +37,48 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.tooling.preview.PreviewParameter
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
-import au.com.shiftyjelly.pocketcasts.account.R
-import au.com.shiftyjelly.pocketcasts.account.onboarding.upgrade.OnboardingPlusHelper
 import au.com.shiftyjelly.pocketcasts.account.viewmodel.OnboardingWelcomeState
 import au.com.shiftyjelly.pocketcasts.account.viewmodel.OnboardingWelcomeViewModel
 import au.com.shiftyjelly.pocketcasts.compose.AppThemeWithBackground
 import au.com.shiftyjelly.pocketcasts.compose.CallOnce
+import au.com.shiftyjelly.pocketcasts.compose.bars.SystemBarsStyles
+import au.com.shiftyjelly.pocketcasts.compose.bars.custom
+import au.com.shiftyjelly.pocketcasts.compose.bars.transparent
 import au.com.shiftyjelly.pocketcasts.compose.buttons.RowButton
+import au.com.shiftyjelly.pocketcasts.compose.components.Confetti
 import au.com.shiftyjelly.pocketcasts.compose.components.TextH10
 import au.com.shiftyjelly.pocketcasts.compose.components.TextH40
 import au.com.shiftyjelly.pocketcasts.compose.components.TextP60
 import au.com.shiftyjelly.pocketcasts.compose.extensions.brush
+import au.com.shiftyjelly.pocketcasts.compose.plusGradientBrush
 import au.com.shiftyjelly.pocketcasts.compose.preview.ThemePreviewParameterProvider
 import au.com.shiftyjelly.pocketcasts.compose.theme
 import au.com.shiftyjelly.pocketcasts.settings.onboarding.OnboardingFlow
 import au.com.shiftyjelly.pocketcasts.settings.onboarding.OnboardingUpgradeSource
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
-import com.airbnb.lottie.compose.LottieAnimation
-import com.airbnb.lottie.compose.LottieCompositionSpec
-import com.airbnb.lottie.compose.animateLottieCompositionAsState
-import com.airbnb.lottie.compose.rememberLottieComposition
-import com.google.accompanist.systemuicontroller.rememberSystemUiController
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @Composable
 fun OnboardingWelcomePage(
-    activeTheme: Theme.ThemeType,
+    theme: Theme.ThemeType,
     flow: OnboardingFlow,
-    isSignedInAsPlus: Boolean,
+    isSignedInAsPlusOrPatron: Boolean,
     onDone: () -> Unit,
     onContinueToDiscover: () -> Unit,
     onImportTapped: () -> Unit,
     onBackPressed: () -> Unit,
+    onUpdateSystemBars: (SystemBarsStyles) -> Unit,
 ) {
     val viewModel = hiltViewModel<OnboardingWelcomeViewModel>()
     val state by viewModel.stateFlow.collectAsState()
 
-    val systemUiController = rememberSystemUiController()
     val pocketCastsTheme = MaterialTheme.theme
 
     CallOnce {
@@ -88,10 +86,9 @@ fun OnboardingWelcomePage(
     }
 
     LaunchedEffect(Unit) {
-        systemUiController.apply {
-            setStatusBarColor(pocketCastsTheme.colors.primaryUi01.copy(alpha = 0.9f), darkIcons = !activeTheme.darkTheme)
-            setNavigationBarColor(Color.Transparent, darkIcons = !activeTheme.darkTheme)
-        }
+        val statusBar = SystemBarStyle.custom(pocketCastsTheme.colors.primaryUi01.copy(alpha = 0.9f), theme.darkTheme)
+        val navigationBar = SystemBarStyle.transparent { theme.darkTheme }
+        onUpdateSystemBars(SystemBarsStyles(statusBar, navigationBar))
     }
 
     BackHandler {
@@ -104,7 +101,7 @@ fun OnboardingWelcomePage(
     val showDiscover = (flow as? OnboardingFlow.PlusFlow)?.source != OnboardingUpgradeSource.FILES
 
     Content(
-        isSignedInAsPlus = isSignedInAsPlus,
+        isSignedInAsPlusOrPatron = isSignedInAsPlusOrPatron,
         showDiscover = showDiscover,
         onContinueToDiscover = {
             viewModel.onContinueToDiscover(flow)
@@ -121,7 +118,7 @@ fun OnboardingWelcomePage(
             viewModel.onDismiss(flow, persistNewsletter = true)
             onDone()
         },
-        onNewsletterCheckedChanged = viewModel::updateNewsletter
+        onNewsletterCheckedChanged = viewModel::updateNewsletter,
     )
 
     if (state.showConfetti) {
@@ -131,7 +128,7 @@ fun OnboardingWelcomePage(
 
 @Composable
 private fun Content(
-    isSignedInAsPlus: Boolean,
+    isSignedInAsPlusOrPatron: Boolean,
     showDiscover: Boolean,
     onContinueToDiscover: () -> Unit,
     onImportTapped: () -> Unit,
@@ -143,12 +140,12 @@ private fun Content(
         Modifier
             .padding(horizontal = 24.dp)
             .fillMaxHeight()
-            .verticalScroll(rememberScrollState())
+            .verticalScroll(rememberScrollState()),
     ) {
         Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars))
         Spacer(Modifier.weight(1f))
 
-        if (isSignedInAsPlus) {
+        if (isSignedInAsPlusOrPatron) {
             PlusPersonCheckmark()
         } else {
             PersonCheckmark()
@@ -157,13 +154,13 @@ private fun Content(
         Spacer(Modifier.height(8.dp))
         TextH10(
             text = stringResource(
-                if (isSignedInAsPlus) {
+                if (isSignedInAsPlusOrPatron) {
                     LR.string.onboarding_welcome_get_you_listening_plus
                 } else {
                     LR.string.onboarding_welcome_get_you_listening
-                }
+                },
             ),
-            modifier = Modifier.padding(end = 8.dp)
+            modifier = Modifier.padding(end = 8.dp),
         )
 
         Spacer(Modifier.height(24.dp))
@@ -172,7 +169,7 @@ private fun Content(
             descriptionRes = LR.string.onboarding_import_podcasts_text,
             actionRes = LR.string.onboarding_import_podcasts_button,
             iconRes = IR.drawable.pc_bw_import,
-            onClick = onImportTapped
+            onClick = onImportTapped,
         )
 
         if (showDiscover) {
@@ -182,7 +179,7 @@ private fun Content(
                 descriptionRes = LR.string.onboarding_welcome_recommendations_text,
                 actionRes = LR.string.onboarding_welcome_recommendations_button,
                 iconRes = IR.drawable.circle_star,
-                onClick = onContinueToDiscover
+                onClick = onContinueToDiscover,
             )
         }
 
@@ -191,7 +188,7 @@ private fun Content(
 
         NewsletterSwitch(
             checked = state.newsletter,
-            onCheckedChange = onNewsletterCheckedChanged
+            onCheckedChange = onNewsletterCheckedChanged,
         )
 
         Spacer(Modifier.height(16.dp))
@@ -205,23 +202,9 @@ private fun Content(
         Spacer(
             Modifier
                 .windowInsetsPadding(WindowInsets.navigationBars)
-                .height(16.dp)
+                .height(16.dp),
         )
     }
-}
-
-@Composable
-private fun Confetti(
-    onConfettiShown: () -> Unit,
-) {
-    val lottieComposition by rememberLottieComposition(LottieCompositionSpec.RawRes(R.raw.confetti))
-    val progress by animateLottieCompositionAsState(lottieComposition)
-
-    LottieAnimation(
-        composition = lottieComposition,
-        contentScale = ContentScale.Crop,
-    )
-    if (progress == 1.0f) onConfettiShown()
 }
 
 @Composable
@@ -230,7 +213,7 @@ private fun CardSection(
     @StringRes descriptionRes: Int,
     @StringRes actionRes: Int,
     @DrawableRes iconRes: Int,
-    onClick: () -> Unit
+    onClick: () -> Unit,
 ) {
     Card(
         shape = RoundedCornerShape(12.dp),
@@ -240,12 +223,12 @@ private fun CardSection(
         ),
         modifier = Modifier.clickable {
             onClick()
-        }
+        },
     ) {
         Column(Modifier.padding(vertical = 16.dp)) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
-                modifier = Modifier.padding(horizontal = 16.dp)
+                modifier = Modifier.padding(horizontal = 16.dp),
             ) {
                 Column(
                     // This column needs a weight modifier so that it is measured after
@@ -266,18 +249,18 @@ private fun CardSection(
                     painter = painterResource(iconRes),
                     contentDescription = null,
                     tint = MaterialTheme.theme.colors.primaryInteractive01,
-                    modifier = Modifier.width(56.dp)
+                    modifier = Modifier.width(56.dp),
                 )
             }
             Divider(
                 thickness = 1.dp,
                 color = MaterialTheme.theme.colors.primaryUi05,
-                modifier = Modifier.padding(vertical = 16.dp)
+                modifier = Modifier.padding(vertical = 16.dp),
             )
             TextH40(
                 text = stringResource(actionRes),
                 color = MaterialTheme.theme.colors.primaryInteractive01,
-                modifier = Modifier.padding(horizontal = 16.dp)
+                modifier = Modifier.padding(horizontal = 16.dp),
             )
         }
     }
@@ -290,12 +273,12 @@ private fun NewsletterSwitch(
 ) {
     Row(
         verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.clickable { onCheckedChange(!checked) }
+        modifier = Modifier.clickable { onCheckedChange(!checked) },
     ) {
         Column(
             modifier = Modifier
                 .padding(end = 16.dp)
-                .weight(1f)
+                .weight(1f),
         ) {
             TextH40(stringResource(LR.string.onboarding_get_the_newsletter))
             TextP60(
@@ -310,14 +293,14 @@ private fun NewsletterSwitch(
             colors = SwitchDefaults.colors(
                 uncheckedThumbColor = Color.Gray,
                 uncheckedTrackColor = Color.Gray,
-            )
+            ),
         )
     }
 }
 
 @Composable
 private fun PlusPersonCheckmark() {
-    PersonCheckmark(OnboardingPlusHelper.plusGradientBrush)
+    PersonCheckmark(Brush.plusGradientBrush)
 }
 
 @Composable
@@ -326,7 +309,7 @@ private fun PersonCheckmark(
 ) {
     Box(
         modifier = Modifier
-            .size(64.dp)
+            .size(64.dp),
     ) {
         val personModifier = Modifier.offset(x = 9.dp, y = 9.dp).let { modifier ->
             personBrush?.let {
@@ -337,7 +320,7 @@ private fun PersonCheckmark(
             painter = painterResource(id = IR.drawable.person_outline),
             contentDescription = null,
             tint = MaterialTheme.theme.colors.primaryInteractive01,
-            modifier = personModifier
+            modifier = personModifier,
         )
 
         Icon(
@@ -348,9 +331,9 @@ private fun PersonCheckmark(
                 .brush(
                     Brush.horizontalGradient(
                         0f to Color(0xFF78D549),
-                        1F to Color(0xFF9BE45E)
-                    )
-                )
+                        1F to Color(0xFF9BE45E),
+                    ),
+                ),
         )
     }
 }
@@ -360,7 +343,7 @@ private fun PersonCheckmark(
 private fun OnboardingWelcomePagePreview(@PreviewParameter(ThemePreviewParameterProvider::class) themeType: Theme.ThemeType) {
     AppThemeWithBackground(themeType) {
         Content(
-            isSignedInAsPlus = false,
+            isSignedInAsPlusOrPatron = false,
             showDiscover = true,
             onContinueToDiscover = {},
             onImportTapped = {},
@@ -376,7 +359,7 @@ private fun OnboardingWelcomePagePreview(@PreviewParameter(ThemePreviewParameter
 private fun OnboardingWelcomePagePlusPreview(@PreviewParameter(ThemePreviewParameterProvider::class) themeType: Theme.ThemeType) {
     AppThemeWithBackground(themeType) {
         Content(
-            isSignedInAsPlus = true,
+            isSignedInAsPlusOrPatron = true,
             showDiscover = true,
             onContinueToDiscover = {},
             onImportTapped = {},

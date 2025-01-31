@@ -1,13 +1,17 @@
 package au.com.shiftyjelly.pocketcasts.utils.extensions
 
-import timber.log.Timber
-import java.io.UnsupportedEncodingException
+import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
 import java.security.MessageDigest
-import java.security.NoSuchAlgorithmException
+import java.text.Normalizer
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 import java.util.TimeZone
+import timber.log.Timber
+
+fun String.escapeLike(escapeChar: Char) = replace("$escapeChar", "$escapeChar$escapeChar")
+    .replace("%", "$escapeChar%")
+    .replace("_", "${escapeChar}_")
 
 val ISO_DATE_FORMATS = object : ThreadLocal<List<SimpleDateFormat>>() {
     override fun initialValue(): List<SimpleDateFormat> {
@@ -18,7 +22,7 @@ val ISO_DATE_FORMATS = object : ThreadLocal<List<SimpleDateFormat>>() {
             // ISO dates can have milliseconds
             SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US).apply {
                 timeZone = TimeZone.getTimeZone("UTC")
-            }
+            },
         )
     }
 }
@@ -66,34 +70,25 @@ fun String.removeNewLines(): String {
     return this.replace("[\n\r]".toRegex(), "")
 }
 
-fun String.sha1(): String? {
-    return try {
-        val digest = MessageDigest.getInstance("SHA-1")
-        digest.update(this.toByteArray(charset("iso-8859-1")), 0, this.length)
-        val hash = digest.digest()
-        hash.joinToString("") { "%02x".format(it) }
+fun String.removeAccents() =
+    Normalizer.normalize(this, Normalizer.Form.NFD)
+        .replace("\\p{Mn}+".toRegex(), "")
+        .replace("\u0141", "L") // Remove L with stroke
+        .replace("\u0142", "l") // Remove l with stroke
+
+fun String.sha1(): String? = hashString("SHA-1")
+fun String.sha256(): String? = hashString("SHA-256")
+
+/**
+ * For information on permitted algorithms, see
+ * https://developer.android.com/reference/kotlin/java/security/MessageDigest
+ */
+private fun String.hashString(algorithm: String) =
+    try {
+        MessageDigest.getInstance(algorithm)
+            .digest(toByteArray())
+            .joinToString("") { "%02x".format(it) }
     } catch (e: Exception) {
+        LogBuffer.e(LogBuffer.TAG_INVALID_STATE, "Error applying $algorithm to $this: ${e.message}")
         null
     }
-}
-
-/* https://en.gravatar.com/site/implement/images/java/ */
-fun String.md5Hex(): String? {
-    try {
-        val md = MessageDigest.getInstance("MD5")
-        return hex(md.digest(this.toByteArray(charset("CP1252"))))
-    } catch (e: NoSuchAlgorithmException) {
-        Timber.e(e.message)
-    } catch (e: UnsupportedEncodingException) {
-        Timber.e(e.message)
-    }
-    return null
-}
-
-private fun hex(array: ByteArray): String {
-    val sb = StringBuffer()
-    for (i in array.indices) {
-        sb.append(Integer.toHexString((array[i].toInt() and 0xFF) or 0x100).substring(1, 3))
-    }
-    return sb.toString()
-}

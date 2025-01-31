@@ -1,52 +1,51 @@
 package au.com.shiftyjelly.pocketcasts.models.to
 
-import okhttp3.HttpUrl
 import kotlin.math.roundToInt
+import kotlin.time.Duration
+import okhttp3.HttpUrl
 
 data class Chapter(
     val title: String,
-    val url: HttpUrl?,
-    var startTime: Int,
-    var endTime: Int,
-    val startOffset: Long,
-    val endOffset: Long,
-    val imagePath: String?,
-    val mimeType: String?,
-    var played: Boolean = false,
-    var index: Int = 0,
-    var progress: Float = 0.0f
+    val startTime: Duration,
+    val endTime: Duration,
+    val url: HttpUrl? = null,
+    val imagePath: String? = null,
+    val index: Int = 0,
+    val selected: Boolean = true,
 ) {
 
     val isImagePresent: Boolean
-        get() = imagePath != null && imagePath.isNotBlank()
+        get() = !imagePath.isNullOrBlank()
 
-    val isValid: Boolean
-        get() = startTime >= 0 && endTime > 0
-
-    val lengthTime: Int
+    val duration: Duration
         get() = endTime - startTime
 
-    fun containsTime(time: Int): Boolean {
-        return time >= startTime && time < endTime || time >= startTime && endTime <= 0
+    operator fun contains(duration: Duration): Boolean {
+        return duration in startTime..<endTime || duration > startTime && endTime <= Duration.ZERO
     }
 
-    fun beforeTime(currentTimeMs: Int): Boolean {
-        return endTime <= currentTimeMs && endTime != -1
-    }
-
-    fun remainingTime(): String {
-        val length = endTime - startTime
-        val remaining = length * (1f - progress)
-        val minutesRemaining = remaining / 1000f / 60f
-        if (minutesRemaining >= 1) {
-            return "${minutesRemaining.roundToInt()}m"
+    fun remainingTime(
+        playbackPosition: Duration,
+        playbackSpeed: Double,
+        adjustRemainingTimeDuration: Boolean,
+    ): String {
+        val progress = calculateProgress(playbackPosition)
+        val baseDuration = duration * (1.0 - progress)
+        val remaining = if (adjustRemainingTimeDuration) {
+            baseDuration / playbackSpeed
         } else {
-            val secondsRemaining = remaining / 1000f
-            return "${secondsRemaining.roundToInt()}s"
+            baseDuration
+        }
+        return if (remaining.inWholeMilliseconds >= 59500) {
+            "${(remaining.inWholeSeconds / 60.0).roundToInt()}m"
+        } else {
+            "${(remaining.inWholeMilliseconds / 1000.0).roundToInt()}s"
         }
     }
 
-    fun progressPercentage(): Int {
-        return (progress * 100f).roundToInt()
+    fun calculateProgress(playbackPosition: Duration): Float = when {
+        playbackPosition == Duration.ZERO || playbackPosition !in this -> 0f
+        duration.inWholeMilliseconds == 0L -> 0f
+        else -> (playbackPosition - startTime).inWholeMilliseconds.toFloat() / duration.inWholeMilliseconds
     }
 }

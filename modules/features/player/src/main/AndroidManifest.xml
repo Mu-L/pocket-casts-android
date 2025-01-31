@@ -9,7 +9,11 @@
             android:configChanges="screenSize|smallestScreenSize|screenLayout|orientation"
             android:windowSoftInputMode="stateAlwaysHidden"
             tools:ignore="UnusedAttribute" />
+        <activity
+            android:name=".view.bookmark.BookmarkActivity"
+            android:launchMode="singleTask"
+            android:windowSoftInputMode="adjustResize"
+            android:configChanges="orientation|layoutDirection|screenSize" />
     </application>
-
 
 </manifest>

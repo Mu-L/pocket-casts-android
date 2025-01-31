@@ -17,12 +17,12 @@ class CastOptionsProvider : OptionsProvider {
             MediaIntentReceiver.ACTION_REWIND,
             MediaIntentReceiver.ACTION_TOGGLE_PLAYBACK,
             MediaIntentReceiver.ACTION_FORWARD,
-            MediaIntentReceiver.ACTION_STOP_CASTING
+            MediaIntentReceiver.ACTION_STOP_CASTING,
         )
         val compatButtonActionsIndices = intArrayOf(0, 1, 2)
         val notificationOptions = NotificationOptions.Builder()
             .setActions(buttonActions, compatButtonActionsIndices)
-            .setSkipStepMs(application.settings.getSkipForwardInMs())
+            .setSkipStepMs(application.settings.skipForwardInSecs.value * 1000L)
             .setTargetActivityClassName(MainActivity::class.java.name)
             .build()
         val mediaOptions = CastMediaOptions.Builder()

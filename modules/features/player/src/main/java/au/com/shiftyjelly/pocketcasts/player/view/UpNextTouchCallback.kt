@@ -8,12 +8,11 @@ import kotlin.math.abs
 import kotlin.math.sign
 
 class UpNextTouchCallback(
-    private val adapter: ItemTouchHelperAdapter
+    private val adapter: ItemTouchHelperAdapter,
 ) : ItemTouchHelper.Callback() {
 
     interface ItemTouchHelperAdapter {
         fun onUpNextEpisodeMove(fromPosition: Int, toPosition: Int)
-        fun onUpNextEpisodeRemove(position: Int)
         fun onUpNextEpisodeStartDrag(viewHolder: RecyclerView.ViewHolder)
         fun onUpNextItemTouchHelperFinished(position: Int)
     }

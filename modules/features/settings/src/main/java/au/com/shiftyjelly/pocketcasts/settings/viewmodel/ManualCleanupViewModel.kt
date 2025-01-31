@@ -5,8 +5,8 @@ import androidx.annotation.StringRes
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodePlayingStatus
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
@@ -15,13 +15,13 @@ import com.jakewharton.rxrelay2.BehaviorRelay
 import dagger.hilt.android.lifecycle.HiltViewModel
 import io.reactivex.BackpressureStrategy
 import io.reactivex.rxkotlin.combineLatest
+import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactive.collect
-import javax.inject.Inject
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @HiltViewModel
@@ -29,13 +29,13 @@ class ManualCleanupViewModel
 @Inject constructor(
     private val episodeManager: EpisodeManager,
     private val playbackManager: PlaybackManager,
-    private val analyticsTracker: AnalyticsTrackerWrapper
+    private val analyticsTracker: AnalyticsTracker,
 ) : ViewModel() {
     data class State(
         val diskSpaceViews: List<DiskSpaceView> = listOf(
             DiskSpaceView(title = LR.string.unplayed),
             DiskSpaceView(title = LR.string.in_progress),
-            DiskSpaceView(title = LR.string.played)
+            DiskSpaceView(title = LR.string.played),
         ),
         val totalSelectedDownloadSize: Long = 0L,
         val deleteButton: DeleteButton = DeleteButton(),
@@ -43,7 +43,7 @@ class ManualCleanupViewModel
         data class DiskSpaceView(
             @StringRes val title: Int,
             val isChecked: Boolean = false,
-            val episodes: List<Episode> = emptyList(),
+            val episodes: List<PodcastEpisode> = emptyList(),
         ) {
             val episodesBytesSize = episodes.sumOf { it.sizeInBytes }
             val episodesSize = episodes.size
@@ -65,13 +65,13 @@ class ManualCleanupViewModel
     private val deleteButton: State.DeleteButton
         get() = State.DeleteButton(isEnabled = episodesToDelete.isNotEmpty())
 
-    private val episodesToDelete: MutableList<Episode> = mutableListOf()
+    private val episodesToDelete: MutableList<PodcastEpisode> = mutableListOf()
     private val switchState: BehaviorRelay<Boolean> = BehaviorRelay.createDefault(false)
     private var deleteButtonAction: (() -> Unit)? = null
 
     init {
         viewModelScope.launch {
-            episodeManager.observeDownloadedEpisodes()
+            episodeManager.findDownloadedEpisodesRxFlowable()
                 .combineLatest(switchState.toFlowable(BackpressureStrategy.LATEST))
                 .collect { result ->
                     val (downloadedEpisodes, isStarredSwitchChecked) = result
@@ -85,7 +85,7 @@ class ManualCleanupViewModel
                     _state.value = State(
                         diskSpaceViews = updatedDiskSpaceViews,
                         totalSelectedDownloadSize = downloadSize,
-                        deleteButton = deleteButton
+                        deleteButton = deleteButton,
                     )
                 }
         }
@@ -120,13 +120,17 @@ class ManualCleanupViewModel
         if (episodesToDelete.isNotEmpty()) {
             trackCleanupCompleted()
             viewModelScope.launch {
-                episodeManager.deleteEpisodeFiles(episodesToDelete, playbackManager)
+                episodeManager.deleteEpisodeFiles(
+                    episodes = episodesToDelete,
+                    playbackManager = playbackManager,
+                    removeFromUpNext = false,
+                )
                 _snackbarMessage.emit(LR.string.settings_manage_downloads_deleting)
             }
         }
     }
 
-    private fun updateDeleteList(isChecked: Boolean, episodes: List<Episode>) {
+    private fun updateDeleteList(isChecked: Boolean, episodes: List<PodcastEpisode>) {
         if (isChecked) {
             episodesToDelete.addAll(episodes)
         } else {
@@ -152,7 +156,7 @@ class ManualCleanupViewModel
         val downloadSize = updatedDiskSpaceViews.filter { it.isChecked }.sumOf { it.episodesBytesSize }
         _state.value = _state.value.copy(
             diskSpaceViews = updatedDiskSpaceViews,
-            totalSelectedDownloadSize = downloadSize
+            totalSelectedDownloadSize = downloadSize,
         )
     }
 
@@ -164,7 +168,7 @@ class ManualCleanupViewModel
         ManualCleanupConfirmationDialog(context = context, onConfirm = ::onDeleteConfirmed)
 
     private fun Array<EpisodePlayingStatus>.mapToDiskSpaceViewsForEpisodes(
-        episodes: List<Episode>,
+        episodes: List<PodcastEpisode>,
     ) = map { episodePlayingStatus ->
         _state.value.diskSpaceViews.first { it.title == episodePlayingStatus.mapToDiskSpaceViewTitle() }
             .copy(episodes = episodes.filter { it.playingStatus == episodePlayingStatus })

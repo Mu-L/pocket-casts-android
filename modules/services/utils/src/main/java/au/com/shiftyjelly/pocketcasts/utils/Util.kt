@@ -4,30 +4,51 @@ import android.app.UiModeManager
 import android.content.Context
 import android.content.Context.ACCESSIBILITY_SERVICE
 import android.content.pm.PackageManager
-import android.content.pm.PackageManager.ApplicationInfoFlags
 import android.content.res.Configuration
-import android.os.Build
 import android.os.Looper
 import android.text.format.Formatter
 import android.view.accessibility.AccessibilityManager
+import androidx.car.app.connection.CarConnection
+import androidx.lifecycle.asFlow
+import androidx.lifecycle.map
+import au.com.shiftyjelly.pocketcasts.utils.Util.isAutomotive
 import java.util.Locale
 
 object Util {
     private const val MINIMUM_SMALLEST_WIDTH_DP_FOR_TABLET = 570
+    private var appPlatform: AppPlatform? = null
+
+    fun isAndroidAutoConnectedFlow(context: Context) =
+        CarConnection(context).type
+            .map { it == CarConnection.CONNECTION_TYPE_PROJECTION }
+            .asFlow()
 
     fun isCarUiMode(context: Context): Boolean {
         val uiModeManager = context.getSystemService(Context.UI_MODE_SERVICE) as UiModeManager
         return uiModeManager.currentModeType == Configuration.UI_MODE_TYPE_CAR
     }
 
-    fun isAutomotive(context: Context): Boolean {
-        val appInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.packageManager.getApplicationInfo(context.packageName, ApplicationInfoFlags.of(PackageManager.GET_META_DATA.toLong()))
-        } else {
-            @Suppress("DEPRECATION")
-            context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA)
-        }.metaData
-        return appInfo?.getBoolean("pocketcasts_automotive", false) == true
+    fun isAutomotive(context: Context): Boolean =
+        appInfoHasBoolean("pocketcasts_automotive", context)
+
+    fun isWearOs(context: Context): Boolean =
+        appInfoHasBoolean("pocketcasts_wear_os", context)
+
+    // Caching this value since it will always be the same for a given app
+    fun getAppPlatform(context: Context): AppPlatform =
+        appPlatform ?: run {
+            val value = when {
+                isAutomotive(context) -> AppPlatform.Automotive
+                isWearOs(context) -> AppPlatform.WearOs
+                else -> AppPlatform.Phone
+            }
+            appPlatform = value
+            value
+        }
+
+    private fun appInfoHasBoolean(key: String, context: Context, default: Boolean = false): Boolean {
+        val appInfo = context.packageManager.getApplicationInfo(context.packageName, PackageManager.GET_META_DATA).metaData
+        return appInfo?.getBoolean(key, default) ?: default
     }
 
     fun isTablet(context: Context) =
@@ -36,7 +57,7 @@ object Util {
 
     fun isTalkbackOn(context: Context): Boolean {
         val am = context.getSystemService(ACCESSIBILITY_SERVICE) as AccessibilityManager?
-        return am?.isEnabled == true
+        return am?.isEnabled == true && am.isTouchExplorationEnabled == true
     }
 
     @Suppress("NAME_SHADOWING")
@@ -64,3 +85,5 @@ object Util {
         return Looper.myLooper() == Looper.getMainLooper()
     }
 }
+
+fun String.titlecaseFirstChar() = replaceFirstChar { if (it.isLowerCase()) it.titlecase() else it.toString() }

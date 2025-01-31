@@ -8,11 +8,10 @@ import android.widget.ImageView
 import android.widget.PopupMenu
 import androidx.annotation.ColorInt
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import au.com.shiftyjelly.pocketcasts.analytics.FirebaseAnalyticsTracker
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeStatusEnum
 import au.com.shiftyjelly.pocketcasts.podcasts.R
 import au.com.shiftyjelly.pocketcasts.ui.extensions.getThemeColor
@@ -27,15 +26,16 @@ import au.com.shiftyjelly.pocketcasts.ui.R as UR
 class PlayButton @JvmOverloads constructor(
     context: Context,
     attrs: AttributeSet? = null,
-    defStyleAttr: Int = 0
+    defStyleAttr: Int = 0,
 ) : FrameLayout(context, attrs, defStyleAttr) {
 
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
+    @Inject lateinit var analyticsTracker: AnalyticsTracker
     var listener: OnClickListener? = null
 
     private var buttonType: PlayButtonType = PlayButtonType.PLAY
     private var episodeUuid: String? = null
     private var podcastUuid: String? = null
+    private var buttonColor: Int? = null
     private var fromListUuid: String? = null
     private var episodeStatus: EpisodeStatusEnum = EpisodeStatusEnum.NOT_DOWNLOADED
     private val progressCircle: ProgressCircleView
@@ -55,7 +55,7 @@ class PlayButton @JvmOverloads constructor(
     companion object {
         private const val LIST_ID_KEY = "list_id"
         private const val PODCAST_UUID_KEY = "podcast_uuid"
-        fun calculateButtonType(episode: Playable, streamByDefault: Boolean): PlayButtonType {
+        fun calculateButtonType(episode: BaseEpisode, streamByDefault: Boolean): PlayButtonType {
             return when {
                 episode.lastPlaybackFailed() -> PlayButtonType.PLAYBACK_FAILED
                 episode.playing -> PlayButtonType.PAUSE
@@ -69,7 +69,7 @@ class PlayButton @JvmOverloads constructor(
     }
 
     interface OnClickListener {
-        var source: AnalyticsSource
+        var source: SourceView
         fun onPlayClicked(episodeUuid: String)
         fun onPauseClicked()
         fun onPlayNext(episodeUuid: String)
@@ -86,7 +86,6 @@ class PlayButton @JvmOverloads constructor(
                 val currentFromListUuid = fromListUuid
                 val currentPodcastUuid = podcastUuid
                 if (currentFromListUuid != null && currentPodcastUuid != null) {
-                    FirebaseAnalyticsTracker.podcastEpisodePlayedFromList(currentFromListUuid, currentPodcastUuid)
                     analyticsTracker.track(AnalyticsEvent.DISCOVER_LIST_EPISODE_PLAY, mapOf(LIST_ID_KEY to currentFromListUuid, PODCAST_UUID_KEY to currentPodcastUuid))
                 }
                 listener?. onPlayClicked(episodeUuid)
@@ -101,7 +100,6 @@ class PlayButton @JvmOverloads constructor(
     }
 
     private fun onLongClick() {
-        FirebaseAnalyticsTracker.longPressedEpisodeButton()
         val popup = PopupMenu(context, this)
         this.setOnTouchListener(popup.dragToOpenListener)
         popup.inflate(R.menu.play_button)
@@ -126,14 +124,14 @@ class PlayButton @JvmOverloads constructor(
         popup.show()
     }
 
-    fun setButtonType(episode: Playable, buttonType: PlayButtonType, @ColorInt color: Int, fromListUuid: String?) {
-        if (buttonType == this.buttonType && episode.uuid == this.episodeUuid) {
+    fun setButtonType(episode: BaseEpisode, buttonType: PlayButtonType, @ColorInt color: Int, fromListUuid: String?) {
+        if (buttonType == this.buttonType && episode.uuid == this.episodeUuid && this.buttonColor == color) {
             return
         }
 
         this.buttonType = buttonType
         this.episodeUuid = episode.uuid
-        if (episode is Episode) {
+        if (episode is PodcastEpisode) {
             this.podcastUuid = episode.podcastUuid
             this.fromListUuid = fromListUuid
         }
@@ -142,6 +140,7 @@ class PlayButton @JvmOverloads constructor(
             PlayButtonType.PLAYED -> context.getThemeColor(UR.attr.primary_icon_02)
             else -> color
         }
+        this.buttonColor = buttonColor
         setIconDrawable(buttonType.drawableId, buttonColor)
         progressCircle.setColor(buttonColor)
         progressCircle.setEpisode(episode, buttonType == PlayButtonType.PLAYED)

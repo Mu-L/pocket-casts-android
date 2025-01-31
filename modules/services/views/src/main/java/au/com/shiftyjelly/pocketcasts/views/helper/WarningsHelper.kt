@@ -5,12 +5,13 @@ import android.content.Context
 import android.view.View
 import androidx.fragment.app.Fragment
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
 import au.com.shiftyjelly.pocketcasts.analytics.EpisodeAnalytics
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.entity.UserEpisode
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
+import au.com.shiftyjelly.pocketcasts.repositories.di.ApplicationScope
 import au.com.shiftyjelly.pocketcasts.repositories.download.DownloadManager
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
@@ -22,11 +23,10 @@ import au.com.shiftyjelly.pocketcasts.views.dialog.ConfirmationDialog
 import au.com.shiftyjelly.pocketcasts.views.fragments.BatteryRestrictionsSettingsFragment
 import com.google.android.material.snackbar.Snackbar
 import dagger.hilt.android.qualifiers.ActivityContext
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
 import java.util.*
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
@@ -39,17 +39,22 @@ class WarningsHelper @Inject constructor(
     private val systemBatteryRestrictions: SystemBatteryRestrictions,
     private val userEpisodeManager: UserEpisodeManager,
     private val episodeAnalytics: EpisodeAnalytics,
+    @ApplicationScope private val applicationScope: CoroutineScope,
 ) {
 
-    @OptIn(DelicateCoroutinesApi::class)
     fun streamingWarningDialog(
-        episode: Playable,
+        episode: BaseEpisode,
         snackbarParentView: View? = null,
-        playbackSource: AnalyticsSource
+        sourceView: SourceView,
     ): ConfirmationDialog {
         return streamingWarningDialog(onConfirm = {
-            GlobalScope.launch {
-                playbackManager.playNow(episode = episode, forceStream = true, playbackSource = playbackSource)
+            applicationScope.launch {
+                playbackManager.playNowSuspend(
+                    episode = episode,
+                    forceStream = true,
+                    showedStreamWarning = true,
+                    sourceView = sourceView,
+                )
                 showBatteryWarningSnackbarIfAppropriate(snackbarParentView)
             }
         })
@@ -79,7 +84,7 @@ class WarningsHelper @Inject constructor(
             .setOnSecondary { download(episodeUuid, waitForWifi = true, from = from) }
     }
 
-    fun uploadWarning(episodeUuid: String, source: AnalyticsSource): ConfirmationDialog {
+    fun uploadWarning(episodeUuid: String, source: SourceView): ConfirmationDialog {
         val titleRes =
             if (Network.isWifiConnection(activity)) LR.string.profile_cloud_upload_warning_title_metered_wifi else LR.string.profile_cloud_upload_warning_title_on_wifi
         return ConfirmationDialog()
@@ -92,10 +97,9 @@ class WarningsHelper @Inject constructor(
             .setOnSecondary { upload(episodeUuid, waitForWifi = true, source = source) }
     }
 
-    @OptIn(DelicateCoroutinesApi::class)
-    private fun upload(episodeUuid: String, waitForWifi: Boolean, source: AnalyticsSource) {
-        GlobalScope.launch {
-            episodeManager.findPlayableByUuid(episodeUuid)?.let {
+    private fun upload(episodeUuid: String, waitForWifi: Boolean, source: SourceView) {
+        applicationScope.launch {
+            episodeManager.findEpisodeByUuid(episodeUuid)?.let {
                 if (it !is UserEpisode) return@let
 
                 if (!it.isUploaded && !it.isQueuedForUpload && !it.isUploading) {
@@ -106,19 +110,18 @@ class WarningsHelper @Inject constructor(
         }
     }
 
-    @OptIn(DelicateCoroutinesApi::class)
     private fun download(episodeUuid: String, waitForWifi: Boolean, from: String) {
-        GlobalScope.launch {
-            episodeManager.findPlayableByUuid(episodeUuid)?.let {
+        applicationScope.launch {
+            episodeManager.findEpisodeByUuid(episodeUuid)?.let {
                 if (it.isDownloading) {
                     episodeManager.stopDownloadAndCleanUp(episodeUuid, from)
                 } else if (!it.isDownloaded) {
                     if (!waitForWifi) {
-                        it.autoDownloadStatus = Episode.AUTO_DOWNLOAD_STATUS_MANUAL_OVERRIDE_WIFI
+                        it.autoDownloadStatus = PodcastEpisode.AUTO_DOWNLOAD_STATUS_MANUAL_OVERRIDE_WIFI
                     }
-                    downloadManager.addEpisodeToQueue(it, from, true)
+                    downloadManager.addEpisodeToQueue(it, from, fireEvent = true, source = SourceView.UNKNOWN)
                     launch {
-                        episodeManager.unarchive(it)
+                        episodeManager.unarchiveBlocking(it)
                     }
                 }
             }
@@ -134,7 +137,7 @@ class WarningsHelper @Inject constructor(
             val fragmentHostListener = activity as FragmentHostListener
             showBatteryWarningSnackbar(
                 snackbarParentView = snackbarParentView ?: fragmentHostListener.snackBarView(),
-                openFragment = { fragmentHostListener.showBottomSheet(it) }
+                openFragment = { fragmentHostListener.showBottomSheet(it) },
             )
         }
     }
@@ -143,18 +146,18 @@ class WarningsHelper @Inject constructor(
     @SuppressLint("WrongConstant")
     private fun showBatteryWarningSnackbar(
         snackbarParentView: View,
-        openFragment: (Fragment) -> Unit
+        openFragment: (Fragment) -> Unit,
     ) {
         // Setting an extra-long duration since this is such a high-priority notification
         val snackbar = Snackbar.make(
             snackbarParentView,
             LR.string.player_battery_warning_snackbar,
-            EXTRA_LONG_SNACKBAR_DURATION_MS
+            EXTRA_LONG_SNACKBAR_DURATION_MS,
         )
 
         snackbar.setAction(
             snackbarParentView.resources.getString(LR.string.player_battery_warning_snackbar_action)
-                .uppercase(Locale.getDefault())
+                .uppercase(Locale.getDefault()),
         ) {
             val fragment = BatteryRestrictionsSettingsFragment.newInstance(closeButton = true)
             openFragment(fragment)

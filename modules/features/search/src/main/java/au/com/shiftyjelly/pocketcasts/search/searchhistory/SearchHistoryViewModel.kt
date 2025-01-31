@@ -3,34 +3,34 @@ package au.com.shiftyjelly.pocketcasts.search.searchhistory
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.models.to.SearchHistoryEntry
+import au.com.shiftyjelly.pocketcasts.repositories.di.IoDispatcher
 import au.com.shiftyjelly.pocketcasts.repositories.searchhistory.SearchHistoryManager
 import au.com.shiftyjelly.pocketcasts.repositories.user.UserManager
-import au.com.shiftyjelly.pocketcasts.ui.di.IoDispatcher
 import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactive.asFlow
-import javax.inject.Inject
 
 @HiltViewModel
 class SearchHistoryViewModel @Inject constructor(
     private val searchHistoryManager: SearchHistoryManager,
     userManager: UserManager,
     @IoDispatcher private val ioDispatcher: CoroutineDispatcher,
-    private val analyticsTracker: AnalyticsTrackerWrapper,
+    private val analyticsTracker: AnalyticsTracker,
 ) : ViewModel() {
     private val signInState = userManager.getSignInState().asFlow()
-    private var isSignedAsPlus = false
+    private var isSignedInAsPlusOrPatron = false
     private var onlySearchRemote: Boolean = false
-    private var source: AnalyticsSource = AnalyticsSource.UNKNOWN
+    private var source: SourceView = SourceView.UNKNOWN
 
     private val mutableState = MutableStateFlow(
-        State(entries = emptyList())
+        State(entries = emptyList()),
     )
     val state: StateFlow<State> = mutableState
 
@@ -42,14 +42,14 @@ class SearchHistoryViewModel @Inject constructor(
         onlySearchRemote = value
     }
 
-    fun setSource(source: AnalyticsSource) {
+    fun setSource(source: SourceView) {
         this.source = source
     }
 
     fun start() {
         viewModelScope.launch(ioDispatcher) {
             signInState.collect { signInState ->
-                isSignedAsPlus = signInState.isSignedInAsPlus
+                isSignedInAsPlusOrPatron = signInState.isSignedInAsPlusOrPatron
                 loadSearchHistory()
             }
         }
@@ -57,7 +57,7 @@ class SearchHistoryViewModel @Inject constructor(
 
     private suspend fun loadSearchHistory() {
         val entries = searchHistoryManager.findAll(
-            showFolders = isSignedAsPlus && !onlySearchRemote
+            showFolders = isSignedInAsPlusOrPatron && !onlySearchRemote,
         )
         mutableState.value = mutableState.value.copy(entries = entries)
     }
@@ -82,7 +82,7 @@ class SearchHistoryViewModel @Inject constructor(
             loadSearchHistory()
             analyticsTracker.track(
                 AnalyticsEvent.SEARCH_HISTORY_CLEARED,
-                AnalyticsProp.sourceMap(source = source)
+                AnalyticsProp.sourceMap(source = source),
             )
         }
     }
@@ -94,8 +94,8 @@ class SearchHistoryViewModel @Inject constructor(
             AnalyticsProp.searchHistoryEntryMap(
                 source = source,
                 type = type,
-                uuid = entry.uuid()
-            )
+                uuid = entry.uuid(),
+            ),
         )
     }
 
@@ -118,9 +118,9 @@ class SearchHistoryViewModel @Inject constructor(
             const val SOURCE = "source"
             const val TYPE = "type"
             const val UUID = "uuid"
-            fun sourceMap(source: AnalyticsSource) = mapOf(SOURCE to source.analyticsValue)
+            fun sourceMap(source: SourceView) = mapOf(SOURCE to source.analyticsValue)
             fun searchHistoryEntryMap(
-                source: AnalyticsSource,
+                source: SourceView,
                 type: SearchHistoryType,
                 uuid: String? = null,
             ) = HashMap<String, String>().apply {

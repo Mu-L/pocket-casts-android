@@ -11,16 +11,19 @@ import androidx.annotation.StringRes
 import androidx.core.os.bundleOf
 import androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_KEY_CONTENT_STYLE_BROWSABLE
 import androidx.media.utils.MediaConstants.DESCRIPTION_EXTRAS_VALUE_CONTENT_STYLE_LIST_ITEM
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.localization.helper.tryToLocalise
 import au.com.shiftyjelly.pocketcasts.models.to.SubscriptionStatus
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
+import au.com.shiftyjelly.pocketcasts.repositories.di.ApplicationScope
 import au.com.shiftyjelly.pocketcasts.repositories.images.PodcastImage
 import au.com.shiftyjelly.pocketcasts.repositories.playback.EXTRA_CONTENT_STYLE_GROUP_TITLE_HINT
 import au.com.shiftyjelly.pocketcasts.repositories.playback.FOLDER_ROOT_PREFIX
 import au.com.shiftyjelly.pocketcasts.repositories.playback.MEDIA_ID_ROOT
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PODCASTS_ROOT
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackService
+import au.com.shiftyjelly.pocketcasts.repositories.playback.RECENT_ROOT
+import au.com.shiftyjelly.pocketcasts.repositories.playback.SUGGESTED_ROOT
 import au.com.shiftyjelly.pocketcasts.repositories.playback.auto.AutoConverter
 import au.com.shiftyjelly.pocketcasts.repositories.refresh.RefreshPodcastsTask
 import au.com.shiftyjelly.pocketcasts.servers.model.Discover
@@ -28,10 +31,12 @@ import au.com.shiftyjelly.pocketcasts.servers.model.DisplayStyle
 import au.com.shiftyjelly.pocketcasts.servers.model.ListType
 import au.com.shiftyjelly.pocketcasts.servers.model.transformWithRegion
 import au.com.shiftyjelly.pocketcasts.servers.server.ListRepository
+import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
 import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import javax.inject.Inject
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
@@ -48,9 +53,14 @@ class AutoPlaybackService : PlaybackService() {
 
     @Inject lateinit var listSource: ListRepository
 
+    @Inject @ApplicationScope
+    lateinit var applicationScope: CoroutineScope
+
     override fun onCreate() {
         super.onCreate()
-        RefreshPodcastsTask.runNow(this)
+        settings.setAutomotiveConnectedToMediaSession(false)
+
+        RefreshPodcastsTask.runNow(this, applicationScope)
 
         Log.d(Settings.LOG_TAG_AUTO, "Auto playback service created")
     }
@@ -59,7 +69,7 @@ class AutoPlaybackService : PlaybackService() {
         super.onDestroy()
         Log.d(Settings.LOG_TAG_AUTO, "Auto playback service destroyed")
 
-        playbackManager.pause(transientLoss = false, playbackSource = AnalyticsSource.AUTO_PAUSE)
+        playbackManager.pause(transientLoss = false, sourceView = SourceView.AUTO_PAUSE)
     }
 
     override fun onLoadChildren(parentId: String, result: Result<List<MediaBrowserCompat.MediaItem>>) {
@@ -77,6 +87,8 @@ class AutoPlaybackService : PlaybackService() {
                     PROFILE_FILES -> loadFilesChildren()
                     PROFILE_LISTENING_HISTORY -> loadListeningHistoryChildren()
                     PROFILE_STARRED -> loadStarredChildren()
+                    RECENT_ROOT -> loadRecentChildren()
+                    SUGGESTED_ROOT -> loadSuggestedChildren()
                     else -> {
                         if (parentId.startsWith(FOLDER_ROOT_PREFIX)) {
                             loadFolderPodcastsChildren(folderUuid = parentId.substring(FOLDER_ROOT_PREFIX.length))
@@ -113,13 +125,15 @@ class AutoPlaybackService : PlaybackService() {
     }
 
     suspend fun loadFiltersRoot(): List<MediaBrowserCompat.MediaItem> {
-        return playlistManager.findAllSuspend().mapNotNull {
+        return playlistManager.findAll().mapNotNull {
             Log.d(Settings.LOG_TAG_AUTO, "Filters ${it.title}")
 
             try {
                 AutoConverter.convertPlaylistToMediaItem(this, it)
             } catch (e: Exception) {
-                Log.e(Settings.LOG_TAG_AUTO, "Filter ${it.title} load failed", e)
+                val message = "Filter ${it.title} load failed"
+                Log.e(Settings.LOG_TAG_AUTO, message, e)
+                LogBuffer.e(Settings.LOG_TAG_AUTO, message, e)
                 null
             }
         }
@@ -127,9 +141,9 @@ class AutoPlaybackService : PlaybackService() {
 
     private fun loadProfileRoot(): List<MediaBrowserCompat.MediaItem> {
         return buildList {
-            // Add the user uploaded Files if they are a Plus subscriber
-            val isPlusUser = subscriptionManager.getCachedStatus() is SubscriptionStatus.Plus
-            if (isPlusUser) {
+            // Add the user uploaded Files if they are a paying subscriber
+            val isPaidUser = subscriptionManager.getCachedStatus() is SubscriptionStatus.Paid
+            if (isPaidUser) {
                 add(buildListMediaItem(id = PROFILE_FILES, title = LR.string.profile_navigation_files, drawable = IR.drawable.automotive_files))
             }
             add(buildListMediaItem(id = PROFILE_STARRED, title = LR.string.profile_navigation_starred, drawable = IR.drawable.automotive_filter_star))
@@ -160,7 +174,7 @@ class AutoPlaybackService : PlaybackService() {
         val region = discoverFeed.regions[discoverFeed.defaultRegionCode] ?: return emptyList()
         val replacements = mapOf(
             discoverFeed.regionCodeToken to region.code,
-            discoverFeed.regionNameToken to region.name
+            discoverFeed.regionNameToken to region.name,
         )
 
         val updatedList = discoverFeed.layout.transformWithRegion(region, replacements, resources)

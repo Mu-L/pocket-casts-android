@@ -2,7 +2,7 @@ package au.com.shiftyjelly.pocketcasts.profile
 
 import androidx.lifecycle.ViewModel
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.models.to.SubscriptionStatus
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.utils.extensions.toLocalizedFormatLongStyle
@@ -13,15 +13,15 @@ import javax.inject.Inject
 class CancelConfirmationViewModel
 @Inject constructor(
     private val settings: Settings,
-    private val analyticsTracker: AnalyticsTrackerWrapper,
+    private val analyticsTracker: AnalyticsTracker,
 ) : ViewModel() {
     var expirationDate: String? = null
-    private val plusSubscription: SubscriptionStatus.Plus?
-        get() = settings.getCachedSubscription() as? SubscriptionStatus.Plus
+    private val paidSubscription: SubscriptionStatus.Paid?
+        get() = settings.cachedSubscriptionStatus.value as? SubscriptionStatus.Paid
 
     init {
         onViewShown()
-        expirationDate = plusSubscription?.expiryDate?.toLocalizedFormatLongStyle()
+        expirationDate = paidSubscription?.expiryDate?.toLocalizedFormatLongStyle()
     }
 
     private fun onViewShown() {

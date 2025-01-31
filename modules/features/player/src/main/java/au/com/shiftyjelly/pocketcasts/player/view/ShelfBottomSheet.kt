@@ -1,120 +1,77 @@
 package au.com.shiftyjelly.pocketcasts.player.view
 
+import android.graphics.Color
 import android.os.Bundle
 import android.view.LayoutInflater
-import android.view.View
 import android.view.ViewGroup
+import androidx.core.os.bundleOf
 import androidx.fragment.app.activityViewModels
-import androidx.recyclerview.widget.LinearLayoutManager
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import au.com.shiftyjelly.pocketcasts.player.databinding.FragmentShelfBottomSheetBinding
-import au.com.shiftyjelly.pocketcasts.player.view.ShelfFragment.Companion.AnalyticsProp
+import androidx.fragment.app.viewModels
+import au.com.shiftyjelly.pocketcasts.compose.AppTheme
+import au.com.shiftyjelly.pocketcasts.compose.extensions.contentWithoutConsumedInsets
+import au.com.shiftyjelly.pocketcasts.player.view.shelf.ShelfBottomSheetPage
 import au.com.shiftyjelly.pocketcasts.player.viewmodel.PlayerViewModel
-import au.com.shiftyjelly.pocketcasts.repositories.chromecast.CastManager
-import au.com.shiftyjelly.pocketcasts.repositories.chromecast.ChromeCastAnalytics
+import au.com.shiftyjelly.pocketcasts.player.viewmodel.ShelfSharedViewModel
+import au.com.shiftyjelly.pocketcasts.player.viewmodel.ShelfViewModel
 import au.com.shiftyjelly.pocketcasts.ui.helper.FragmentHostListener
-import au.com.shiftyjelly.pocketcasts.ui.helper.StatusBarColor
-import au.com.shiftyjelly.pocketcasts.views.extensions.applyColor
+import au.com.shiftyjelly.pocketcasts.ui.helper.StatusBarIconColor
+import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
 import au.com.shiftyjelly.pocketcasts.views.fragments.BaseDialogFragment
-import com.google.android.gms.cast.framework.CastButtonFactory
 import dagger.hilt.android.AndroidEntryPoint
-import timber.log.Timber
-import javax.inject.Inject
+import dagger.hilt.android.lifecycle.withCreationCallback
 
 @AndroidEntryPoint
 class ShelfBottomSheet : BaseDialogFragment() {
-    @Inject lateinit var castManager: CastManager
-    @Inject lateinit var analyticsTracker: AnalyticsTrackerWrapper
-    @Inject lateinit var chromeCastAnalytics: ChromeCastAnalytics
+    private val episodeId: String
+        get() = requireNotNull(arguments?.getString(ARG_EPISODE_ID))
 
-    override val statusBarColor: StatusBarColor? = null
+    override val statusBarIconColor: StatusBarIconColor = StatusBarIconColor.Light
 
     private val playerViewModel: PlayerViewModel by activityViewModels()
-    private val adapter = ShelfAdapter(editable = false, listener = this::onClick, dragListener = null)
-    private var binding: FragmentShelfBottomSheetBinding? = null
+    private val shelfSharedViewModel: ShelfSharedViewModel by activityViewModels()
+    private val shelfViewModel: ShelfViewModel by viewModels(
+        extrasProducer = {
+            defaultViewModelCreationExtras.withCreationCallback<ShelfViewModel.Factory> { factory ->
+                factory.create(
+                    episodeId = episodeId,
+                    isEditable = false,
+                )
+            }
+        },
+    )
 
-    override fun onCreateView(inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?): View? {
-        binding = FragmentShelfBottomSheetBinding.inflate(inflater, container, false)
-        return binding?.root
-    }
-
-    override fun onDestroyView() {
-        super.onDestroyView()
-        binding = null
-    }
-
-    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
-        super.onViewCreated(view, savedInstanceState)
-
-        val binding = binding ?: return
-
-        binding.recyclerView.adapter = adapter
-        binding.recyclerView.layoutManager = LinearLayoutManager(view.context, LinearLayoutManager.VERTICAL, false)
-
-        playerViewModel.trimmedShelfLive.observe(viewLifecycleOwner) {
-            adapter.playable = it.second
-            adapter.submitList(it.first.drop(4))
-        }
-
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?,
+    ) = contentWithoutConsumedInsets {
+        // set the initial background color to black to stop the dialog from flashing white
+        setDialogTint(Color.BLACK)
         playerViewModel.playingEpisodeLive.observe(viewLifecycleOwner) { (_, backgroundColor) ->
-            applyColor(theme, backgroundColor)
+            setDialogTint(backgroundColor)
         }
-
-        binding.btnEdit.setOnClickListener {
-            analyticsTracker.track(AnalyticsEvent.PLAYER_SHELF_OVERFLOW_MENU_REARRANGE_STARTED)
-            (activity as FragmentHostListener).showModal(ShelfFragment())
-            dismiss()
-        }
-
-        CastButtonFactory.setUpMediaRouteButton(view.context, binding.mediaRouteButton)
-        binding.mediaRouteButton.setOnClickListener {
-            chromeCastAnalytics.trackChromeCastViewShown()
+        AppTheme(Theme.ThemeType.DARK) {
+            ShelfBottomSheetPage(
+                shelfViewModel = shelfViewModel,
+                shelfSharedViewModel = shelfSharedViewModel,
+                playerViewModel = playerViewModel,
+                onEditButtonClick = {
+                    (activity as FragmentHostListener).showModal(ShelfFragment.newInstance(episodeId))
+                    dismiss()
+                },
+                onDismiss = { dismiss() },
+            )
         }
     }
 
-    private fun onClick(item: ShelfItem) {
-        when (item) {
-            is ShelfItem.Effects -> {
-                EffectsFragment().show(parentFragmentManager, "effects")
-            }
-            is ShelfItem.Sleep -> {
-                SleepFragment().show(parentFragmentManager, "sleep")
-            }
-            is ShelfItem.Star -> {
-                playerViewModel.starToggle()
-            }
-            is ShelfItem.Share -> {
-                ShareFragment().show(parentFragmentManager, "sleep")
-            }
-            is ShelfItem.Podcast -> {
-                (activity as FragmentHostListener).closePlayer()
-                val podcast = playerViewModel.podcast
-                if (podcast != null) {
-                    (activity as? FragmentHostListener)?.openPodcastPage(podcast.uuid)
-                } else {
-                    (activity as? FragmentHostListener)?.openCloudFiles()
-                }
-            }
-            is ShelfItem.Cast -> {
-                binding?.mediaRouteButton?.performClick()
-            }
-            is ShelfItem.Played -> {
-                context?.let {
-                    playerViewModel.markCurrentlyPlayingAsPlayed(it)?.show(parentFragmentManager, "mark_as_played")
-                }
-            }
-            is ShelfItem.Archive -> {
-                playerViewModel.archiveCurrentlyPlaying(resources)?.show(parentFragmentManager, "archive")
-            }
-            ShelfItem.Download -> {
-                Timber.e("Unexpected click on ShelfItem.Download")
-            }
+    companion object {
+        private const val ARG_EPISODE_ID = "episode_id"
+        fun newInstance(
+            episodeId: String,
+        ) = ShelfBottomSheet().apply {
+            arguments = bundleOf(
+                ARG_EPISODE_ID to episodeId,
+            )
         }
-        analyticsTracker.track(
-            AnalyticsEvent.PLAYER_SHELF_ACTION_TAPPED,
-            mapOf(AnalyticsProp.Key.FROM to AnalyticsProp.Value.OVERFLOW_MENU, AnalyticsProp.Key.ACTION to item.analyticsValue)
-        )
-        dismiss()
     }
 }

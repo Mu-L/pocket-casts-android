@@ -7,40 +7,47 @@ import androidx.appcompat.app.AppCompatActivity
 import au.com.shiftyjelly.pocketcasts.account.AccountActivity
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
 import au.com.shiftyjelly.pocketcasts.profile.databinding.ActivitySonosAppLinkBinding
-import au.com.shiftyjelly.pocketcasts.servers.ServerCallback
-import au.com.shiftyjelly.pocketcasts.servers.ServerManager
+import au.com.shiftyjelly.pocketcasts.repositories.sync.SyncManager
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
+import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
 import au.com.shiftyjelly.pocketcasts.views.extensions.setup
 import au.com.shiftyjelly.pocketcasts.views.helper.NavigationIcon
 import au.com.shiftyjelly.pocketcasts.views.helper.UiUtil
 import dagger.hilt.android.AndroidEntryPoint
-import timber.log.Timber
-import java.io.UnsupportedEncodingException
 import java.net.URLEncoder
 import javax.inject.Inject
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @AndroidEntryPoint
-class SonosAppLinkActivity : AppCompatActivity() {
+class SonosAppLinkActivity : AppCompatActivity(), CoroutineScope {
 
     companion object {
         const val SONOS_APP_ACTIVITY_RESULT = 1007
         const val SONOS_STATE_EXTRA = "state"
 
-        fun buildIntent(intent: Intent, context: Context): Intent {
+        fun buildIntent(state: String, context: Context): Intent {
             return Intent(context, SonosAppLinkActivity::class.java).apply {
-                putExtra(SonosAppLinkActivity.SONOS_STATE_EXTRA, intent.data?.query)
+                putExtra(SONOS_STATE_EXTRA, state)
             }
         }
     }
 
     @Inject lateinit var settings: Settings
+
     @Inject lateinit var theme: Theme
-    @Inject lateinit var serverManager: ServerManager
+
+    @Inject lateinit var syncManager: SyncManager
 
     private lateinit var sonosState: String
     private lateinit var binding: ActivitySonosAppLinkBinding
+
+    override val coroutineContext: CoroutineContext
+        get() = Dispatchers.Default
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -56,7 +63,7 @@ class SonosAppLinkActivity : AppCompatActivity() {
             navigationIcon = NavigationIcon.Close,
             onNavigationClick = { finish() },
             activity = this,
-            theme = theme
+            theme = theme,
         )
 
         intent.getStringExtra(SONOS_STATE_EXTRA)?.let {
@@ -64,10 +71,10 @@ class SonosAppLinkActivity : AppCompatActivity() {
         } ?: run { finish() }
 
         binding.connectBtn.setOnClickListener {
-            val email = settings.getSyncEmail()
-            val password = settings.getSyncPassword()
-            if (email != null && password != null) {
-                connectWithSonos(email, password)
+            if (syncManager.isLoggedIn()) {
+                launch {
+                    connectWithSonos()
+                }
             } else {
                 setupSyncing()
             }
@@ -79,7 +86,7 @@ class SonosAppLinkActivity : AppCompatActivity() {
 
         binding.sonosImage.setImageResource(if (theme.isDarkTheme) IR.drawable.sonos_dark else IR.drawable.sonos_light)
 
-        if (settings.isLoggedIn()) {
+        if (syncManager.isLoggedIn()) {
             binding.explanationText.setText(LR.string.profile_sonos_connect_account)
             binding.connectBtn.setText(LR.string.profile_sonos_connect)
         } else {
@@ -92,44 +99,28 @@ class SonosAppLinkActivity : AppCompatActivity() {
         startActivity(Intent(this, AccountActivity::class.java))
     }
 
-    private fun connectWithSonos(email: String, password: String) {
-        binding.connectBtn.setText(LR.string.profile_sonos_connecting)
-        serverManager.obtainThirdPartyToken(
-            email, password, "sonos",
-            object : ServerCallback<String> {
-                override fun dataReturned(result: String?) {
-                    result ?: return
-                    tokenObtained(result)
-                }
-
-                override fun onFailed(
-                    errorCode: Int,
-                    userMessage: String?,
-                    serverMessageId: String?,
-                    serverMessage: String?,
-                    throwable: Throwable?
-                ) {
-                    tokenObtainFailed()
-                }
-            }
-        )
-    }
-
-    private fun tokenObtained(token: String) {
+    private suspend fun connectWithSonos() {
         try {
-            val result = Intent()
-            result.putExtra("code", URLEncoder.encode(token, "UTF-8"))
-            val state = sonosState.replace("state=".toRegex(), "")
-            result.putExtra("state", state)
+            binding.connectBtn.setText(LR.string.profile_sonos_connecting)
+
+            val response = syncManager.exchangeSonos()
+            val sonosToken = response.accessToken
+
+            val code = URLEncoder.encode(sonosToken.value, "UTF-8")
+            val state = sonosState
+
+            val result = Intent().apply {
+                putExtra("code", code)
+                putExtra("state", state)
+            }
+
             setResult(SONOS_APP_ACTIVITY_RESULT, result)
             finish()
-        } catch (e: UnsupportedEncodingException) {
-            Timber.e(e)
-        }
-    }
+        } catch (e: Exception) {
+            LogBuffer.e(LogBuffer.TAG_CRASH, e, "Failed to link Sonos")
 
-    private fun tokenObtainFailed() {
-        binding.connectBtn.setText(LR.string.profile_sonos_retry)
-        UiUtil.displayAlert(this, getString(LR.string.profile_sonos_linking_failed), getString(LR.string.profile_sonos_linking_failed_summary), null)
+            binding.connectBtn.setText(LR.string.profile_sonos_retry)
+            UiUtil.displayAlert(this, getString(LR.string.profile_sonos_linking_failed), getString(LR.string.profile_sonos_linking_failed_summary), null)
+        }
     }
 }

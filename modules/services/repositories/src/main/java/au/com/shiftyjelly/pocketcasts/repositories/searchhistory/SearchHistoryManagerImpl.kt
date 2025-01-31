@@ -2,12 +2,12 @@ package au.com.shiftyjelly.pocketcasts.repositories.searchhistory
 
 import au.com.shiftyjelly.pocketcasts.models.db.AppDatabase
 import au.com.shiftyjelly.pocketcasts.models.to.SearchHistoryEntry
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 
-private const val MAX_HISTORY_COUNT = 250
+private const val MAX_HISTORY_COUNT = 20
 
 class SearchHistoryManagerImpl @Inject constructor(
     appDatabase: AppDatabase,

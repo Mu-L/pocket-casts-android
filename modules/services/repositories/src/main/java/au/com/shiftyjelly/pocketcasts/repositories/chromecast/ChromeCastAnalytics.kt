@@ -1,23 +1,23 @@
 package au.com.shiftyjelly.pocketcasts.repositories.chromecast
 
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
-import kotlinx.coroutines.DelicateCoroutinesApi
-import kotlinx.coroutines.GlobalScope
-import kotlinx.coroutines.launch
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.repositories.di.ApplicationScope
 import javax.inject.Inject
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.launch
 
 class ChromeCastAnalytics @Inject constructor(
-    private val analyticsTracker: AnalyticsTrackerWrapper,
+    private val analyticsTracker: AnalyticsTracker,
     private val castManager: CastManager,
+    @ApplicationScope private val applicationScope: CoroutineScope,
 ) {
     fun trackChromeCastViewShown() {
-        @OptIn(DelicateCoroutinesApi::class)
-        GlobalScope.launch {
+        applicationScope.launch {
             val isConnected = castManager.isConnected()
             analyticsTracker.track(
                 AnalyticsEvent.CHROMECAST_VIEW_SHOWN,
-                mapOf("is_connected" to isConnected)
+                mapOf("is_connected" to isConnected),
             )
         }
     }

@@ -1,27 +1,72 @@
 package au.com.shiftyjelly.pocketcasts.repositories.download.task
 
 import android.content.Context
-import androidx.work.Worker
+import android.os.SystemClock
+import android.util.Log
+import androidx.hilt.work.HiltWorker
+import androidx.work.Constraints
+import androidx.work.CoroutineWorker
+import androidx.work.Data
+import androidx.work.ExistingWorkPolicy
+import androidx.work.OneTimeWorkRequestBuilder
+import androidx.work.WorkManager
 import androidx.work.WorkerParameters
-import au.com.shiftyjelly.pocketcasts.servers.ServerShowNotesManager
-import au.com.shiftyjelly.pocketcasts.servers.di.ServersModule
-import okhttp3.OkHttpClient
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
+import au.com.shiftyjelly.pocketcasts.repositories.shownotes.ShowNotesManager
+import au.com.shiftyjelly.pocketcasts.utils.log.LogBuffer
+import dagger.assisted.Assisted
+import dagger.assisted.AssistedInject
+import retrofit2.HttpException
 
-class UpdateShowNotesTask(val context: Context, val params: WorkerParameters) : Worker(context, params) {
+/**
+ * Try to cache the show notes so they can be viewed offline. This task happens when the user downloads an episode.
+ */
+@HiltWorker
+class UpdateShowNotesTask @AssistedInject constructor(
+    @Assisted context: Context,
+    @Assisted params: WorkerParameters,
+    private val showNotesManager: ShowNotesManager,
+) : CoroutineWorker(context, params) {
     companion object {
+        private const val TASK_NAME = "UpdateShowNotesTask"
+        const val INPUT_PODCAST_UUID = "podcast_uuid"
         const val INPUT_EPISODE_UUID = "episode_uuid"
+
+        fun enqueue(episode: PodcastEpisode, constraints: Constraints = Constraints.NONE, context: Context) {
+            LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "$TASK_NAME - enqueued ${episode.uuid}")
+            val cacheShowNotesData = Data.Builder()
+                .putString(INPUT_PODCAST_UUID, episode.podcastUuid)
+                .putString(INPUT_EPISODE_UUID, episode.uuid)
+                .build()
+            val workRequest = OneTimeWorkRequestBuilder<UpdateShowNotesTask>()
+                .setInputData(cacheShowNotesData)
+                .addTag(episode.uuid)
+                .setConstraints(constraints)
+                .build()
+            WorkManager.getInstance(context).beginUniqueWork(TASK_NAME, ExistingWorkPolicy.APPEND_OR_REPLACE, workRequest).enqueue()
+        }
     }
 
-    private val httpClient: OkHttpClient = ServersModule.getShowNotesClient(context)
-    private val episodeUUID = inputData.getString(INPUT_EPISODE_UUID)!!
+    private val podcastUuid = inputData.getString(INPUT_PODCAST_UUID) ?: ""
+    private val episodeUuid = inputData.getString(INPUT_EPISODE_UUID) ?: ""
 
-    override fun doWork(): Result {
+    override suspend fun doWork(): Result {
+        info("Worker started - podcast: $podcastUuid")
+        val startTime = SystemClock.elapsedRealtime()
         return try {
-            val serverShowNotes = ServerShowNotesManager(httpClient)
-            serverShowNotes.cacheShowNotes(episodeUUID).onErrorComplete().blockingAwait()
+            showNotesManager.downloadToCacheShowNotes(podcastUuid = podcastUuid, episodeUuid = episodeUuid)
+            info("Worker completed - took ${SystemClock.elapsedRealtime() - startTime} ms")
             Result.success()
         } catch (e: Exception) {
-            Result.failure()
+            info("Worker failed - took ${SystemClock.elapsedRealtime() - startTime} ms")
+            val logPriority = if (e is HttpException) Log.INFO else Log.ERROR
+            LogBuffer.addLog(logPriority, LogBuffer.TAG_BACKGROUND_TASKS, e, "Failed to update show notes")
+            // Don't keep retrying if the download fails. The user can download the show notes when viewing them.
+            Result.success()
         }
+    }
+
+    private fun info(message: String) {
+        LogBuffer.i(LogBuffer.TAG_BACKGROUND_TASKS, "$TASK_NAME (Worker ID: $id) - $message")
     }
 }

@@ -16,17 +16,19 @@ import androidx.core.widget.ImageViewCompat
 import androidx.recyclerview.widget.RecyclerView
 import au.com.shiftyjelly.pocketcasts.localization.helper.RelativeDateFormatter
 import au.com.shiftyjelly.pocketcasts.localization.helper.TimeHelper
-import au.com.shiftyjelly.pocketcasts.models.entity.Episode
-import au.com.shiftyjelly.pocketcasts.models.entity.Playable
+import au.com.shiftyjelly.pocketcasts.models.entity.BaseEpisode
+import au.com.shiftyjelly.pocketcasts.models.entity.Bookmark
+import au.com.shiftyjelly.pocketcasts.models.entity.PodcastEpisode
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodePlayingStatus
 import au.com.shiftyjelly.pocketcasts.models.type.EpisodeStatusEnum
 import au.com.shiftyjelly.pocketcasts.podcasts.databinding.AdapterEpisodeBinding
 import au.com.shiftyjelly.pocketcasts.podcasts.view.components.PlayButton
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
+import au.com.shiftyjelly.pocketcasts.preferences.model.ArtworkConfiguration
 import au.com.shiftyjelly.pocketcasts.repositories.download.DownloadProgressUpdate
 import au.com.shiftyjelly.pocketcasts.repositories.extensions.getSummaryText
-import au.com.shiftyjelly.pocketcasts.repositories.images.PodcastImageLoader
-import au.com.shiftyjelly.pocketcasts.repositories.images.into
+import au.com.shiftyjelly.pocketcasts.repositories.images.PocketCastsImageRequestFactory
+import au.com.shiftyjelly.pocketcasts.repositories.images.loadInto
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackState
 import au.com.shiftyjelly.pocketcasts.repositories.playback.UpNextQueue
 import au.com.shiftyjelly.pocketcasts.repositories.playback.containsUuid
@@ -35,6 +37,8 @@ import au.com.shiftyjelly.pocketcasts.ui.helper.ColorUtils
 import au.com.shiftyjelly.pocketcasts.utils.extensions.dpToPx
 import au.com.shiftyjelly.pocketcasts.views.helper.EpisodeItemTouchHelper
 import au.com.shiftyjelly.pocketcasts.views.helper.RowSwipeable
+import au.com.shiftyjelly.pocketcasts.views.helper.SwipeButtonLayout
+import au.com.shiftyjelly.pocketcasts.views.helper.SwipeButtonLayoutFactory
 import io.reactivex.BackpressureStrategy
 import io.reactivex.Observable
 import io.reactivex.android.schedulers.AndroidSchedulers
@@ -55,18 +59,23 @@ class EpisodeViewHolder(
     val downloadProgressUpdates: Observable<DownloadProgressUpdate>,
     val playbackStateUpdates: Observable<PlaybackState>,
     val upNextChangesObservable: Observable<UpNextQueue.State>,
-    val imageLoader: PodcastImageLoader? = null
+    val imageRequestFactory: PocketCastsImageRequestFactory,
+    val settings: Settings,
+    private val swipeButtonLayoutFactory: SwipeButtonLayoutFactory,
+    private val artworkContext: ArtworkConfiguration.Element?,
 ) : RecyclerView.ViewHolder(binding.root), RowSwipeable {
     override val episodeRow: ViewGroup
         get() = binding.episodeRow
-    override val swipeLeftIcon: ImageView
-        get() = binding.archiveIcon
     override val leftRightIcon1: ImageView
         get() = binding.leftRightIcon1
     override val leftRightIcon2: ImageView
         get() = binding.leftRightIcon2
-    override val episode: Playable?
-        get() = binding.episode
+    override val rightLeftIcon1: ImageView
+        get() = binding.rightLeftIcon1
+    override val rightLeftIcon2: ImageView
+        get() = binding.rightLeftIcon2
+    override val episode: BaseEpisode?
+        get() = episodeInstance
     override val positionAdapter: Int
         get() = bindingAdapterPosition
     override val rightToLeftSwipeLayout: ViewGroup
@@ -79,15 +88,19 @@ class EpisodeViewHolder(
         object Artwork : ViewMode()
     }
 
+    override lateinit var swipeButtonLayout: SwipeButtonLayout
+
     val dateFormatter = RelativeDateFormatter(context)
     val context: Context
         get() = binding.root.context
     private var disposable: Disposable? = null
+    private var episodeInstance: BaseEpisode? = null
+    private var isUpNext: Boolean? = null
     override var upNextAction = Settings.UpNextAction.PLAY_NEXT
     override var isMultiSelecting: Boolean = false
     override val leftIconDrawablesRes: List<EpisodeItemTouchHelper.IconWithBackground>
         get() {
-            return if (binding.inUpNext == true) {
+            return if (isUpNext == true) {
                 listOf(EpisodeItemTouchHelper.IconWithBackground(IR.drawable.ic_upnext_remove, binding.episodeRow.context.getThemeColor(UR.attr.support_05)))
             } else {
                 val addToUpNextIcon = when (upNextAction) {
@@ -101,23 +114,47 @@ class EpisodeViewHolder(
 
                 listOf(
                     EpisodeItemTouchHelper.IconWithBackground(addToUpNextIcon, binding.episodeRow.context.getThemeColor(UR.attr.support_04)),
-                    EpisodeItemTouchHelper.IconWithBackground(secondaryUpNextIcon, binding.episodeRow.context.getThemeColor(UR.attr.support_03))
+                    EpisodeItemTouchHelper.IconWithBackground(secondaryUpNextIcon, binding.episodeRow.context.getThemeColor(UR.attr.support_03)),
                 )
             }
         }
-    override val rightIconDrawableRes: List<EpisodeItemTouchHelper.IconWithBackground>
+    override val rightIconDrawablesRes: List<EpisodeItemTouchHelper.IconWithBackground>
         get() {
-            return if (episode?.isArchived == true)
-                listOf(EpisodeItemTouchHelper.IconWithBackground(IR.drawable.ic_unarchive, binding.episodeRow.context.getThemeColor(UR.attr.support_06)))
-            else
-                listOf(EpisodeItemTouchHelper.IconWithBackground(IR.drawable.ic_archive, binding.episodeRow.context.getThemeColor(UR.attr.support_06)))
+
+            val archiveItem = EpisodeItemTouchHelper.IconWithBackground(
+                iconRes = if (episode?.isArchived == true) {
+                    IR.drawable.ic_unarchive
+                } else {
+                    IR.drawable.ic_archive
+                },
+                backgroundColor = binding.episodeRow.context.getThemeColor(UR.attr.support_06),
+            )
+
+            val shareItem = EpisodeItemTouchHelper.IconWithBackground(
+                iconRes = IR.drawable.ic_share,
+                backgroundColor = binding.episodeRow.context.getThemeColor(UR.attr.support_01),
+            )
+
+            return listOf(archiveItem, shareItem)
         }
 
-    fun setup(episode: Episode, fromListUuid: String?, tintColor: Int, playButtonListener: PlayButton.OnClickListener, streamByDefault: Boolean, upNextAction: Settings.UpNextAction, multiSelectEnabled: Boolean = false, isSelected: Boolean = false, disposables: CompositeDisposable) {
+    fun setup(
+        episode: PodcastEpisode,
+        fromListUuid: String?,
+        tintColor: Int,
+        playButtonListener: PlayButton.OnClickListener,
+        streamByDefault: Boolean,
+        upNextAction: Settings.UpNextAction,
+        multiSelectEnabled: Boolean = false,
+        isSelected: Boolean = false,
+        disposables: CompositeDisposable,
+        bookmarksObservable: Observable<List<Bookmark>>,
+        bookmarksAvailable: Boolean,
+    ) {
         this.upNextAction = upNextAction
         this.isMultiSelecting = multiSelectEnabled
 
-        val sameEpisode = episode.uuid == binding.episode?.uuid
+        val sameEpisode = episode.uuid == episodeInstance?.uuid
 
         // don't set initial values if it's already been done, a side effect is when an episode is playing that it will quickly toggle between the play and pause icon
         if (!sameEpisode) {
@@ -125,13 +162,18 @@ class EpisodeViewHolder(
             binding.playButton.setButtonType(episode, buttonType, tintColor, fromListUuid)
             updateTimeLeft(textView = binding.lblStatus, episode = episode)
         }
-        binding.episode = episode
+        episodeInstance = episode
+        binding.star.isVisible = episode.isStarred
+        binding.video.isVisible = episode.isVideo
+        swipeButtonLayout = swipeButtonLayoutFactory.forEpisode(episode)
+
         binding.playButton.listener = playButtonListener
 
         val captionColor = context.getThemeColor(UR.attr.primary_text_02)
         val iconColor = context.getThemeColor(UR.attr.primary_icon_02)
         binding.progressCircle.setColor(captionColor)
         binding.progressBar.indeterminateTintList = ColorStateList.valueOf(captionColor)
+        binding.imgBookmark.imageTintList = ColorStateList.valueOf(tintColor)
 
         val downloadUpdates = downloadProgressUpdates
             .filter { it.episodeUuid == episode.uuid }
@@ -145,6 +187,13 @@ class EpisodeViewHolder(
             .startWith(emptyState) // Pre load with a blank state so it doesn't wait for the first update
             .map { if (it.episodeUuid == episode.uuid) it else emptyState } // When another episode is playing return an empty state to clear fields like the buffering status
 
+        data class CombinedData(
+            val downloadProgress: Int,
+            val playbackState: PlaybackState,
+            val isInUpNext: Boolean,
+            val bookmarks: List<Bookmark>,
+        )
+
         val imgIcon = binding.imgIcon
         val progressBar = binding.progressBar
         val progressCircle = binding.progressCircle
@@ -155,22 +204,31 @@ class EpisodeViewHolder(
         val date = binding.date
 
         disposable?.dispose()
-        disposable = Observables.combineLatest(downloadUpdates, playbackStateForThisEpisode, isInUpNextObservable)
+        disposable = Observables.combineLatest(
+            downloadUpdates,
+            playbackStateForThisEpisode,
+            isInUpNextObservable,
+            bookmarksObservable,
+        ) { downloadProgress, playbackState, isInUpNext, bookmarks ->
+            CombinedData(downloadProgress, playbackState, isInUpNext, bookmarks)
+        }
             .distinctUntilChanged()
             .toFlowable(BackpressureStrategy.LATEST)
             .subscribeOn(Schedulers.io())
             .observeOn(AndroidSchedulers.mainThread())
-            .doOnNext { (downloadProgress, playbackState, isInUpNext) ->
-                episode.playing = playbackState.isPlaying && playbackState.episodeUuid == episode.uuid
+            .doOnNext { combinedData ->
+                episode.playing = combinedData.playbackState.isPlaying && combinedData.playbackState.episodeUuid == episode.uuid
                 val playButtonType = PlayButton.calculateButtonType(episode, streamByDefault)
                 binding.playButton.setButtonType(episode, playButtonType, tintColor, fromListUuid)
-                binding.inUpNext = isInUpNext
+                isUpNext = combinedData.isInUpNext
+                binding.imgUpNext.isVisible = isUpNext == true
+                binding.imgBookmark.isVisible = combinedData.bookmarks.map { it.episodeUuid }.contains(episode.uuid) && bookmarksAvailable
 
                 imgIcon.isVisible = false
                 progressCircle.isVisible = false
                 progressBar.isVisible = false
                 imgIcon.alpha = 1.0f
-                if (playbackState.episodeUuid == episode.uuid && playbackState.isBuffering) {
+                if (combinedData.playbackState.episodeUuid == episode.uuid && combinedData.playbackState.isBuffering) {
                     progressBar.isVisible = true
                     lblStatus.text = context.getString(LR.string.episode_row_buffering)
                 } else if (episode.episodeStatus == EpisodeStatusEnum.DOWNLOADED) {
@@ -180,8 +238,8 @@ class EpisodeViewHolder(
                     ImageViewCompat.setImageTintList(imgIcon, ColorStateList.valueOf(context.getThemeColor(UR.attr.support_02)))
                 } else if (episode.episodeStatus == EpisodeStatusEnum.DOWNLOADING) {
                     progressCircle.isVisible = true
-                    lblStatus.text = context.getString(LR.string.episode_row_downloading, downloadProgress)
-                    progressCircle.setPercent(downloadProgress / 100.0f)
+                    lblStatus.text = context.getString(LR.string.episode_row_downloading, combinedData.downloadProgress)
+                    progressCircle.setPercent(combinedData.downloadProgress / 100.0f)
                 } else if (episode.episodeStatus == EpisodeStatusEnum.DOWNLOAD_FAILED) {
                     imgIcon.isVisible = true
                     imgIcon.setImageResource(IR.drawable.ic_download_failed_row)
@@ -218,10 +276,12 @@ class EpisodeViewHolder(
                 } else {
                     updateTimeLeft(textView = lblStatus, episode = episode)
                 }
+                updateRowText(episode, captionColor, tintColor, date, title, lblStatus, combinedData.isInUpNext)
 
                 val episodeGreyedOut = episode.playingStatus == EpisodePlayingStatus.COMPLETED || episode.isArchived
-                imgArtwork.alpha = if (episodeGreyedOut) 0.5f else 1f
-                binding.executePendingBindings()
+                val imageAlpha = if (episodeGreyedOut) 0.5f else 1f
+                imgArtwork.alpha = imageAlpha
+                binding.imgBookmark.alpha = imageAlpha
             }
             .subscribe()
             .addTo(disposables)
@@ -231,8 +291,10 @@ class EpisodeViewHolder(
 
         val artworkVisible = viewMode is ViewMode.Artwork
         imgArtwork.isVisible = artworkVisible
-        if (!sameEpisode && artworkVisible && imageLoader != null) {
-            imageLoader.load(episode).into(imgArtwork)
+        if (!sameEpisode && artworkVisible) {
+            val artworkConfiguration = settings.artworkConfiguration.value
+            val useEpisodeArtwork = artworkContext?.let(artworkConfiguration::useEpisodeArtwork) ?: artworkConfiguration.useEpisodeArtwork
+            imageRequestFactory.create(episode, useEpisodeArtwork).loadInto(imgArtwork)
         }
 
         val transition = AutoTransition()
@@ -260,13 +322,13 @@ class EpisodeViewHolder(
         TransitionManager.endTransitions(episodeRow)
     }
 
-    private fun updateTimeLeft(textView: TextView, episode: Episode) {
+    private fun updateTimeLeft(textView: TextView, episode: PodcastEpisode) {
         val timeLeft = TimeHelper.getTimeLeft(episode.playedUpToMs, episode.durationMs.toLong(), episode.isInProgress, context)
         textView.text = timeLeft.text
         textView.contentDescription = timeLeft.description
     }
 
-    private fun updateRowText(episode: Episode, captionColor: Int, tintColor: Int, date: TextView, title: TextView, lblStatus: TextView) {
+    private fun updateRowText(episode: PodcastEpisode, captionColor: Int, tintColor: Int, date: TextView, title: TextView, lblStatus: TextView, isInUpNext: Boolean = false) {
         val episodeGreyedOut = episode.playingStatus == EpisodePlayingStatus.COMPLETED || episode.isArchived
         val alphaCaptionColor = ColorUtils.colorWithAlpha(captionColor, 128)
         val dateTintColor = if (episodeGreyedOut) alphaCaptionColor else tintColor
@@ -274,15 +336,44 @@ class EpisodeViewHolder(
         date.text = episode.getSummaryText(dateFormatter = dateFormatter, tintColor = dateTintColor, showDuration = false, context = date.context)
         date.setTextColor(dateTextColor)
 
-        val textColor = if (episodeGreyedOut) ColorUtils.colorWithAlpha(context.getThemeColor(UR.attr.primary_text_01), 128) else context.getThemeColor(
-            UR.attr.primary_text_01
-        )
+        val textColor = if (episodeGreyedOut) {
+            ColorUtils.colorWithAlpha(context.getThemeColor(UR.attr.primary_text_01), 128)
+        } else {
+            context.getThemeColor(
+                UR.attr.primary_text_01,
+            )
+        }
         title.setTextColor(textColor)
 
         val statusColor = if (episodeGreyedOut) alphaCaptionColor else context.getThemeColor(UR.attr.primary_text_02)
         lblStatus.setTextColor(statusColor)
 
-        episodeRow.contentDescription = "${title.text}. ${date.text}. ${lblStatus.contentDescription ?: lblStatus.text}"
+        val attributes = mutableListOf(
+            title.text.toString(),
+            date.text.toString(),
+        )
+        attributes.add(
+            if (!lblStatus.contentDescription.isNullOrEmpty()) {
+                lblStatus.contentDescription.toString()
+            } else {
+                lblStatus.text.toString()
+            },
+        )
+        if (episode.isInProgress) {
+            attributes.add(context.getString(LR.string.in_progress))
+        } else if (isInUpNext) {
+            attributes.add(context.getString(LR.string.episode_in_up_next))
+        }
+        if (episode.isDownloaded) {
+            attributes.add(context.getString(LR.string.downloaded))
+        }
+        if (episode.isDownloading) {
+            attributes.add(context.getString(LR.string.episode_downloading))
+        }
+        if (episode.isStarred) {
+            attributes.add(context.getString(LR.string.starred))
+        }
+        episodeRow.contentDescription = attributes.joinToString(separator = ". ") + ". "
     }
 
     fun clearObservers() {

@@ -6,8 +6,8 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.asFlow
 import androidx.lifecycle.viewModelScope
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
 import au.com.shiftyjelly.pocketcasts.models.to.FolderItem
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
@@ -16,6 +16,7 @@ import au.com.shiftyjelly.pocketcasts.search.SearchHandler
 import au.com.shiftyjelly.pocketcasts.search.SearchState
 import au.com.shiftyjelly.pocketcasts.utils.Network
 import dagger.hilt.android.lifecycle.HiltViewModel
+import javax.inject.Inject
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
@@ -24,7 +25,6 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.reactive.asFlow
-import javax.inject.Inject
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @HiltViewModel
@@ -32,7 +32,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
     private val podcastManager: PodcastManager,
     private val playbackManager: PlaybackManager,
     private val searchHandler: SearchHandler,
-    private val analyticsTracker: AnalyticsTrackerWrapper,
+    private val analyticsTracker: AnalyticsTracker,
 ) : ViewModel() {
 
     private val _state = MutableStateFlow(
@@ -40,7 +40,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
             searchQuery = "",
             results = emptyList(),
             loading = false,
-        )
+        ),
     )
     val state: StateFlow<State> = _state
 
@@ -56,12 +56,12 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
     )
 
     init {
-        searchHandler.setSource(AnalyticsSource.ONBOARDING_RECOMMENDATIONS_SEARCH)
+        searchHandler.setSource(SourceView.ONBOARDING_RECOMMENDATIONS_SEARCH)
         searchHandler.setOnlySearchRemote(true)
         viewModelScope.launch {
 
             val subscribedUuidFlow = podcastManager
-                .observeSubscribed()
+                .subscribedRxFlowable()
                 .asFlow()
                 .map { ls ->
                     ls.map { it.uuid }
@@ -69,7 +69,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
 
             combine(
                 subscribedUuidFlow,
-                searchHandler.searchResults.asFlow()
+                searchHandler.searchResults.asFlow(),
             ) { subscribedUuids, searchState ->
 
                 val podcasts = when (searchState) {
@@ -79,7 +79,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
                         // TODO handle loading
                         // TODO handle error
 
-                        searchState.list
+                        searchState.podcasts
                             .filterIsInstance<FolderItem.Podcast>()
                             .map {
                                 PodcastResult(
@@ -102,7 +102,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
         }
         analyticsTracker.track(
             AnalyticsEvent.SEARCH_SHOWN,
-            mapOf(AnalyticsProp.SOURCE to AnalyticsSource.ONBOARDING_RECOMMENDATIONS.analyticsValue)
+            mapOf(AnalyticsProp.SOURCE to SourceView.ONBOARDING_RECOMMENDATIONS.analyticsValue),
         )
     }
 
@@ -118,7 +118,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
             Toast.makeText(
                 context,
                 context.getString(LR.string.error_check_your_internet_connection),
-                Toast.LENGTH_SHORT
+                Toast.LENGTH_SHORT,
             ).show()
         }
     }
@@ -143,7 +143,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
                     } else {
                         podcast
                     }
-                }
+                },
             )
         }
     }
@@ -151,7 +151,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
     fun onBackPressed() {
         analyticsTracker.track(
             AnalyticsEvent.SEARCH_DISMISSED,
-            mapOf(AnalyticsProp.SOURCE to AnalyticsSource.ONBOARDING_RECOMMENDATIONS.analyticsValue)
+            mapOf(AnalyticsProp.SOURCE to SourceView.ONBOARDING_RECOMMENDATIONS.analyticsValue),
         )
     }
 
@@ -160,7 +160,7 @@ class OnboardingRecommendationsSearchViewModel @Inject constructor(
             const val UUID = "uuid"
             const val SOURCE = "source"
             fun podcastSubscribeToggled(uuid: String) =
-                mapOf(UUID to uuid, SOURCE to AnalyticsSource.ONBOARDING_RECOMMENDATIONS_SEARCH)
+                mapOf(UUID to uuid, SOURCE to SourceView.ONBOARDING_RECOMMENDATIONS_SEARCH)
         }
     }
 }

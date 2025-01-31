@@ -2,13 +2,11 @@ package au.com.shiftyjelly.pocketcasts.account.onboarding
 
 import android.content.res.Configuration
 import android.content.res.Configuration.ORIENTATION_LANDSCAPE
-import android.widget.Toast
+import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.annotation.DrawableRes
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,29 +25,34 @@ import androidx.compose.material.ButtonDefaults
 import androidx.compose.material.MaterialTheme
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.tooling.preview.PreviewParameter
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.coerceAtMost
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import au.com.shiftyjelly.pocketcasts.account.R
+import au.com.shiftyjelly.pocketcasts.account.onboarding.components.ContinueWithGoogleButton
+import au.com.shiftyjelly.pocketcasts.account.viewmodel.GoogleSignInButtonViewModel
 import au.com.shiftyjelly.pocketcasts.account.viewmodel.GoogleSignInState
 import au.com.shiftyjelly.pocketcasts.account.viewmodel.OnboardingLoginOrSignUpViewModel
+import au.com.shiftyjelly.pocketcasts.account.viewmodel.OnboardingLoginOrSignUpViewModel.UiState
 import au.com.shiftyjelly.pocketcasts.compose.AppThemeWithBackground
 import au.com.shiftyjelly.pocketcasts.compose.CallOnce
 import au.com.shiftyjelly.pocketcasts.compose.bars.NavigationButton
 import au.com.shiftyjelly.pocketcasts.compose.bars.NavigationIconButton
+import au.com.shiftyjelly.pocketcasts.compose.bars.SystemBarsStyles
+import au.com.shiftyjelly.pocketcasts.compose.bars.custom
+import au.com.shiftyjelly.pocketcasts.compose.bars.transparent
 import au.com.shiftyjelly.pocketcasts.compose.buttons.RowButton
-import au.com.shiftyjelly.pocketcasts.compose.buttons.RowOutlinedButton
 import au.com.shiftyjelly.pocketcasts.compose.buttons.RowTextButton
 import au.com.shiftyjelly.pocketcasts.compose.components.PodcastCover
 import au.com.shiftyjelly.pocketcasts.compose.components.RectangleCover
@@ -60,10 +63,8 @@ import au.com.shiftyjelly.pocketcasts.compose.preview.ThemePreviewParameterProvi
 import au.com.shiftyjelly.pocketcasts.compose.theme
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
 import au.com.shiftyjelly.pocketcasts.settings.onboarding.OnboardingFlow
+import au.com.shiftyjelly.pocketcasts.ui.extensions.inLandscape
 import au.com.shiftyjelly.pocketcasts.ui.theme.Theme
-import au.com.shiftyjelly.pocketcasts.utils.extensions.pxToDp
-import com.google.accompanist.systemuicontroller.rememberSystemUiController
-import au.com.shiftyjelly.pocketcasts.images.R as IR
 import au.com.shiftyjelly.pocketcasts.localization.R as LR
 
 @Composable
@@ -74,10 +75,9 @@ internal fun OnboardingLoginOrSignUpPage(
     onSignUpClicked: () -> Unit,
     onLoginClicked: () -> Unit,
     onContinueWithGoogleComplete: (GoogleSignInState) -> Unit,
-    viewModel: OnboardingLoginOrSignUpViewModel = hiltViewModel()
+    onUpdateSystemBars: (SystemBarsStyles) -> Unit,
+    viewModel: OnboardingLoginOrSignUpViewModel = hiltViewModel(),
 ) {
-
-    val systemUiController = rememberSystemUiController()
     val pocketCastsTheme = MaterialTheme.theme
 
     CallOnce {
@@ -85,98 +85,132 @@ internal fun OnboardingLoginOrSignUpPage(
     }
 
     LaunchedEffect(Unit) {
-        systemUiController.apply {
-            setStatusBarColor(pocketCastsTheme.colors.primaryUi01.copy(alpha = 0.9f), darkIcons = !theme.darkTheme)
-            setNavigationBarColor(Color.Transparent, darkIcons = !theme.darkTheme)
-        }
+        val statusBar = SystemBarStyle.custom(pocketCastsTheme.colors.primaryUi01.copy(alpha = 0.9f), theme.darkTheme)
+        val navigationBar = SystemBarStyle.transparent { theme.darkTheme }
+        onUpdateSystemBars(SystemBarsStyles(statusBar, navigationBar))
     }
 
-    BackHandler {
+    val onNavigationClick = {
         viewModel.onDismiss(flow)
         onDismiss()
     }
 
-    Column(
-        Modifier
-            .fillMaxHeight()
-            .verticalScroll(rememberScrollState())
-    ) {
+    BackHandler {
+        onNavigationClick()
+    }
 
-        Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars))
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
 
-        Row(
+    Content(
+        state = state,
+        flow = flow,
+        showContinueWithGoogleButton = viewModel.showContinueWithGoogleButton,
+        onSignUpClicked = {
+            viewModel.onSignUpClicked(flow)
+            onSignUpClicked()
+        },
+        onLoginClicked = {
+            viewModel.onLoginClicked(flow)
+            onLoginClicked()
+        },
+        onContinueWithGoogleComplete = onContinueWithGoogleComplete,
+        onNavigationClick = onNavigationClick,
+    )
+}
+
+@Composable
+private fun Content(
+    state: UiState,
+    flow: OnboardingFlow,
+    showContinueWithGoogleButton: Boolean,
+    onNavigationClick: () -> Unit,
+    onSignUpClicked: () -> Unit,
+    onLoginClicked: () -> Unit,
+    onContinueWithGoogleComplete: (GoogleSignInState) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val width = maxWidth
+        val height = maxHeight
+        Column(
             Modifier
-                .padding(vertical = 12.dp, horizontal = 16.dp)
-                .fillMaxWidth()
+                .fillMaxHeight()
+                .verticalScroll(rememberScrollState()),
         ) {
-            Box(Modifier.weight(1f)) {
-                NavigationIconButton(
-                    iconColor = MaterialTheme.theme.colors.primaryText01,
-                    navigationButton = NavigationButton.Close,
-                    onNavigationClick = {
-                        viewModel.onDismiss(flow)
-                        onDismiss()
-                    }
+            Spacer(Modifier.windowInsetsPadding(WindowInsets.statusBars))
+
+            Row(
+                Modifier
+                    .padding(vertical = 12.dp, horizontal = 16.dp)
+                    .fillMaxWidth(),
+            ) {
+                Box(Modifier.weight(1f)) {
+                    NavigationIconButton(
+                        iconColor = MaterialTheme.theme.colors.primaryText01,
+                        navigationButton = NavigationButton.Close,
+                        onNavigationClick = onNavigationClick,
+                    )
+                }
+
+                HorizontalLogo(
+                    modifier = Modifier
+                        .align(Alignment.CenterVertically)
+                        .height(28.dp),
+                )
+
+                Spacer(Modifier.weight(1f))
+            }
+
+            Spacer(Modifier.height(32.dp))
+
+            if (state is UiState.Loaded) {
+                val context = LocalContext.current
+                Artwork(
+                    googleSignInShown = GoogleSignInButtonViewModel.showContinueWithGoogleButton(
+                        context,
+                    ),
+                    podcasts = state.randomPodcasts,
+                    viewWidth = width,
+                    viewHeight = height,
                 )
             }
 
-            HorizontalLogo(
+            Spacer(Modifier.weight(1f))
+
+            TextH10(
+                text = stringResource(LR.string.onboarding_discover_your_next_favorite_podcast),
                 modifier = Modifier
-                    .align(Alignment.CenterVertically)
-                    .height(28.dp)
+                    .padding(horizontal = 24.dp)
+                    .fillMaxWidth(),
+                textAlign = TextAlign.Center,
+            )
+
+            Spacer(Modifier.height(8.dp))
+
+            TextH40(
+                text = stringResource(LR.string.onboarding_create_an_account_to),
+                modifier = Modifier
+                    .padding(horizontal = 24.dp)
+                    .fillMaxWidth(),
+                textAlign = TextAlign.Center,
             )
 
             Spacer(Modifier.weight(1f))
+
+            if (showContinueWithGoogleButton) {
+                Spacer(Modifier.height(8.dp))
+                ContinueWithGoogleButton(
+                    flow = flow,
+                    onComplete = onContinueWithGoogleComplete,
+                )
+            } else {
+                Spacer(Modifier.height(8.dp))
+            }
+
+            SignUpButton(onClick = onSignUpClicked)
+            LogInButton(onClick = onLoginClicked)
+            Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
         }
-
-        Spacer(Modifier.height(32.dp))
-
-        Artwork(viewModel.showContinueWithGoogleButton, viewModel.randomPodcasts)
-
-        Spacer(Modifier.weight(1f))
-
-        TextH10(
-            text = stringResource(LR.string.onboarding_discover_your_next_favorite_podcast),
-            modifier = Modifier
-                .padding(horizontal = 24.dp)
-                .fillMaxWidth(),
-            textAlign = TextAlign.Center,
-        )
-
-        Spacer(Modifier.height(8.dp))
-
-        TextH40(
-            text = stringResource(LR.string.onboarding_create_an_account_to),
-            modifier = Modifier
-                .padding(horizontal = 24.dp)
-                .fillMaxWidth(),
-            textAlign = TextAlign.Center
-        )
-
-        Spacer(Modifier.weight(1f))
-
-        if (viewModel.showContinueWithGoogleButton) {
-            Spacer(Modifier.height(8.dp))
-            ContinueWithGoogleButton(
-                flow = flow,
-                viewModel = viewModel,
-                onComplete = onContinueWithGoogleComplete
-            )
-        } else {
-            Spacer(Modifier.height(8.dp))
-        }
-
-        SignUpButton(onClick = {
-            viewModel.onSignUpClicked(flow)
-            onSignUpClicked()
-        })
-
-        LogInButton(onClick = {
-            viewModel.onLoginClicked(flow)
-            onLoginClicked()
-        })
-
-        Spacer(Modifier.windowInsetsPadding(WindowInsets.navigationBars))
     }
 }
 
@@ -184,13 +218,13 @@ internal fun OnboardingLoginOrSignUpPage(
 private fun Artwork(
     googleSignInShown: Boolean,
     podcasts: List<Podcast>,
+    viewWidth: Dp,
+    viewHeight: Dp,
 ) {
-    val context = LocalContext.current
-    val localView = LocalView.current
     val configuration = LocalConfiguration.current
-
-    val viewWidth = localView.width.pxToDp(context).dp
-    val viewHeight = localView.height.pxToDp(context).dp
+    if (configuration.inLandscape()) {
+        return
+    }
 
     val artworkWidth = viewWidth * Artwork.getScaleFactor(googleSignInShown)
     val maxY = Artwork.coverModels.maxOf { it.y }
@@ -202,14 +236,14 @@ private fun Artwork(
         modifier = Modifier
             .height(artworkHeight)
             .fillMaxWidth()
-            .offset(x = artworkWidth * Artwork.getOffsetFactor(googleSignInShown))
+            .offset(x = artworkWidth * Artwork.getOffsetFactor(googleSignInShown)),
     ) {
         Artwork.coverModels.mapIndexed { index, model ->
             val coverWidth = (artworkWidth * model.size).coerceAtMost(artworkHeight / 2f)
             val modifier = Modifier
                 .offset(
                     x = artworkWidth * model.x,
-                    y = artworkHeight * model.y * Artwork.getCoverYOffsetFactor(configuration)
+                    y = artworkHeight * model.y * Artwork.getCoverYOffsetFactor(configuration),
                 )
             val podcast = if (index < podcasts.size) podcasts[index] else null
             podcast?.let {
@@ -217,79 +251,16 @@ private fun Artwork(
                     uuid = it.uuid,
                     coverWidth = coverWidth,
                     cornerRadius = 4.dp,
-                    modifier = modifier
+                    modifier = modifier,
                 )
             } ?: RectangleCover(
                 imageResId = model.imageResId,
                 coverWidth = coverWidth,
                 cornerRadius = 4.dp,
-                modifier = modifier
+                modifier = modifier,
             )
         }
     }
-}
-
-/**
- * Let the user sign into Pocket Casts with their Google account.
- * The One Tap for Android library is used. Sign in doesn't work when no Google accounts are set up on the device. In this case, fallback to the legacy Google Sign-In for Android.
- */
-@Composable
-private fun ContinueWithGoogleButton(
-    flow: OnboardingFlow,
-    viewModel: OnboardingLoginOrSignUpViewModel,
-    onComplete: (GoogleSignInState) -> Unit
-) {
-    val context = LocalContext.current
-    val errorMessage = stringResource(LR.string.onboarding_continue_with_google_error)
-
-    val showError = {
-        Toast.makeText(context, errorMessage, Toast.LENGTH_LONG).show()
-    }
-
-    // request legacy Google Sign-In and process the result
-    val googleLegacySignInLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        viewModel.onGoogleLegacySignInResult(
-            result = result,
-            onSuccess = onComplete,
-            onError = showError
-        )
-    }
-
-    // request Google One Tap Sign-In and process the result
-    val googleOneTapSignInLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { result ->
-        viewModel.onGoogleOneTapSignInResult(
-            result = result,
-            onSuccess = onComplete,
-            onError = {
-                viewModel.startGoogleLegacySignIn(
-                    onSuccess = { request -> googleLegacySignInLauncher.launch(request) },
-                    onError = showError
-                )
-            }
-        )
-    }
-
-    val onSignInClick = {
-        viewModel.startGoogleOneTapSignIn(
-            flow = flow,
-            onSuccess = { request -> googleOneTapSignInLauncher.launch(request) },
-            onError = {
-                viewModel.startGoogleLegacySignIn(
-                    onSuccess = { request -> googleLegacySignInLauncher.launch(request) },
-                    onError = showError
-                )
-            }
-        )
-    }
-
-    RowOutlinedButton(
-        text = stringResource(LR.string.onboarding_continue_with_google),
-        leadingIcon = painterResource(IR.drawable.google_g),
-        tintIcon = false,
-        border = BorderStroke(2.dp, MaterialTheme.theme.colors.primaryInteractive03),
-        colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.theme.colors.primaryText01),
-        onClick = onSignInClick
-    )
 }
 
 @Composable
@@ -299,7 +270,7 @@ private fun SignUpButton(onClick: () -> Unit) {
         colors = ButtonDefaults.buttonColors(backgroundColor = MaterialTheme.theme.colors.primaryText01, contentColor = MaterialTheme.theme.colors.primaryUi01),
         includePadding = false,
         onClick = onClick,
-        modifier = Modifier.padding(horizontal = 16.dp)
+        modifier = Modifier.padding(horizontal = 16.dp),
     )
 }
 
@@ -310,7 +281,7 @@ private fun LogInButton(onClick: () -> Unit) {
         colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.theme.colors.primaryText01),
         includePadding = false,
         onClick = onClick,
-        modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 16.dp)
+        modifier = Modifier.padding(start = 16.dp, top = 8.dp, end = 16.dp, bottom = 16.dp),
     )
 }
 
@@ -346,7 +317,7 @@ private object Artwork {
 
 @Preview(showBackground = true)
 @Composable
-private fun RowOutlinedButtonPreview(@PreviewParameter(ThemePreviewParameterProvider::class) themeType: Theme.ThemeType) {
+private fun OnboardingLoginOrSignUpPagePreview(@PreviewParameter(ThemePreviewParameterProvider::class) themeType: Theme.ThemeType) {
     AppThemeWithBackground(themeType) {
         OnboardingLoginOrSignUpPage(
             theme = themeType,
@@ -355,6 +326,7 @@ private fun RowOutlinedButtonPreview(@PreviewParameter(ThemePreviewParameterProv
             onSignUpClicked = {},
             onLoginClicked = {},
             onContinueWithGoogleComplete = {},
+            onUpdateSystemBars = {},
         )
     }
 }

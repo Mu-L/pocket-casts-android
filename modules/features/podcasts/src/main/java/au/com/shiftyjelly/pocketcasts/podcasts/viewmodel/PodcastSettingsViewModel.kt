@@ -1,11 +1,13 @@
 package au.com.shiftyjelly.pocketcasts.podcasts.viewmodel
 
 import androidx.lifecycle.LiveData
-import androidx.lifecycle.LiveDataReactiveStreams
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.asLiveData
+import androidx.lifecycle.toLiveData
+import androidx.lifecycle.viewModelScope
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsSource
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
+import au.com.shiftyjelly.pocketcasts.analytics.SourceView
 import au.com.shiftyjelly.pocketcasts.models.entity.Playlist
 import au.com.shiftyjelly.pocketcasts.models.entity.Podcast
 import au.com.shiftyjelly.pocketcasts.preferences.Settings
@@ -16,22 +18,21 @@ import au.com.shiftyjelly.pocketcasts.repositories.podcast.PlaylistUpdateSource
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PodcastManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.UserPlaylistUpdate
 import dagger.hilt.android.lifecycle.HiltViewModel
-import io.reactivex.BackpressureStrategy
-import io.reactivex.rxkotlin.combineLatest
 import io.reactivex.schedulers.Schedulers
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.launch
 
 @HiltViewModel
 class PodcastSettingsViewModel @Inject constructor(
     private val podcastManager: PodcastManager,
     private val playbackManager: PlaybackManager,
     private val playlistManager: PlaylistManager,
-    private val analyticsTracker: AnalyticsTrackerWrapper,
-    settings: Settings
+    private val analyticsTracker: AnalyticsTracker,
+    settings: Settings,
 ) : ViewModel(), CoroutineScope {
 
     override val coroutineContext: CoroutineContext
@@ -42,24 +43,26 @@ class PodcastSettingsViewModel @Inject constructor(
     lateinit var includedFilters: LiveData<List<Playlist>>
     lateinit var availableFilters: LiveData<List<Playlist>>
 
-    val globalSettings = LiveDataReactiveStreams.fromPublisher(
-        settings.autoAddUpNextLimit.toFlowable(BackpressureStrategy.LATEST)
-            .combineLatest(settings.autoAddUpNextLimitBehaviour.toFlowable(BackpressureStrategy.LATEST))
-    )
+    val globalSettings = settings.autoAddUpNextLimit.flow
+        .combine(settings.autoAddUpNextLimitBehaviour.flow, ::Pair)
+        .asLiveData(viewModelScope.coroutineContext)
 
     fun loadPodcast(uuid: String) {
         this.podcastUuid = uuid
-        podcast = LiveDataReactiveStreams.fromPublisher(podcastManager.observePodcastByUuid(uuid).subscribeOn(Schedulers.io()))
+        podcast = podcastManager
+            .podcastByUuidRxFlowable(uuid)
+            .subscribeOn(Schedulers.io())
+            .toLiveData()
 
-        val filters = playlistManager.observeAll().map {
+        val filters = playlistManager.findAllRxFlowable().map {
             it.filter { filter -> filter.podcastUuidList.contains(uuid) }
         }
-        includedFilters = LiveDataReactiveStreams.fromPublisher(filters)
+        includedFilters = filters.toLiveData()
 
-        val availablePodcastFilters = playlistManager.observeAll().map {
+        val availablePodcastFilters = playlistManager.findAllRxFlowable().map {
             it.filter { filter -> !filter.allPodcasts }
         }
-        availableFilters = LiveDataReactiveStreams.fromPublisher(availablePodcastFilters)
+        availableFilters = availablePodcastFilters.toLiveData()
     }
 
     fun isAutoAddToUpNextOn(): Boolean {
@@ -85,14 +88,14 @@ class PodcastSettingsViewModel @Inject constructor(
         val podcast = this.podcast.value ?: return
         launch {
             val autoDownloadStatus = if (download) Podcast.AUTO_DOWNLOAD_NEW_EPISODES else Podcast.AUTO_DOWNLOAD_OFF
-            podcastManager.updateAutoDownloadStatus(podcast, autoDownloadStatus)
+            podcastManager.updateAutoDownloadStatusBlocking(podcast, autoDownloadStatus)
         }
     }
 
     fun showNotifications(show: Boolean) {
         val podcast = this.podcast.value ?: return
         launch {
-            podcastManager.updateShowNotifications(podcast, show)
+            podcastManager.updateShowNotificationsBlocking(podcast, show)
         }
     }
 
@@ -114,10 +117,10 @@ class PodcastSettingsViewModel @Inject constructor(
     fun unsubscribe() {
         val podcast = this.podcast.value ?: return
         launch {
-            podcastManager.unsubscribe(podcast.uuid, playbackManager)
+            podcastManager.unsubscribeBlocking(podcast.uuid, playbackManager)
             analyticsTracker.track(
                 AnalyticsEvent.PODCAST_UNSUBSCRIBED,
-                AnalyticsProp.podcastUnsubscribed(AnalyticsSource.PODCAST_SETTINGS, podcast.uuid)
+                AnalyticsProp.podcastUnsubscribed(SourceView.PODCAST_SETTINGS, podcast.uuid),
             )
         }
     }
@@ -125,7 +128,7 @@ class PodcastSettingsViewModel @Inject constructor(
     fun filterSelectionChanged(newSelection: List<String>) {
         launch {
             podcastUuid?.let { podcastUuid ->
-                playlistManager.findAll().forEach { playlist ->
+                playlistManager.findAllBlocking().forEach { playlist ->
                     val currentSelection = playlist.podcastUuidList.toMutableList()
                     val included = newSelection.contains(playlist.uuid)
 
@@ -145,9 +148,9 @@ class PodcastSettingsViewModel @Inject constructor(
                         playlist.syncStatus = Playlist.SYNC_STATUS_NOT_SYNCED
                         val userPlaylistUpdate = UserPlaylistUpdate(
                             listOf(PlaylistProperty.Podcasts),
-                            PlaylistUpdateSource.PODCAST_SETTINGS
+                            PlaylistUpdateSource.PODCAST_SETTINGS,
                         )
-                        playlistManager.update(playlist, userPlaylistUpdate)
+                        playlistManager.updateBlocking(playlist, userPlaylistUpdate)
                     }
                 }
             }
@@ -157,7 +160,7 @@ class PodcastSettingsViewModel @Inject constructor(
     private object AnalyticsProp {
         private const val SOURCE_KEY = "source"
         private const val UUID_KEY = "uuid"
-        fun podcastUnsubscribed(source: AnalyticsSource, uuid: String) =
+        fun podcastUnsubscribed(source: SourceView, uuid: String) =
             mapOf(SOURCE_KEY to source.analyticsValue, UUID_KEY to uuid)
     }
 }

@@ -1,28 +1,30 @@
 package au.com.shiftyjelly.pocketcasts.filters
 
 import androidx.lifecycle.LiveData
-import androidx.lifecycle.LiveDataReactiveStreams
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.toLiveData
+import androidx.lifecycle.viewModelScope
 import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsEvent
-import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTrackerWrapper
+import au.com.shiftyjelly.pocketcasts.analytics.AnalyticsTracker
 import au.com.shiftyjelly.pocketcasts.models.entity.Playlist
 import au.com.shiftyjelly.pocketcasts.repositories.playback.PlaybackManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.EpisodeManager
 import au.com.shiftyjelly.pocketcasts.repositories.podcast.PlaylistManager
 import dagger.hilt.android.lifecycle.HiltViewModel
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import javax.inject.Inject
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 
 @HiltViewModel
 class FiltersFragmentViewModel @Inject constructor(
     val playlistManager: PlaylistManager,
-    private val analyticsTracker: AnalyticsTrackerWrapper,
+    private val analyticsTracker: AnalyticsTracker,
     episodeManager: EpisodeManager,
-    playbackManager: PlaybackManager
+    playbackManager: PlaybackManager,
 ) : ViewModel(), CoroutineScope {
 
     companion object {
@@ -35,12 +37,10 @@ class FiltersFragmentViewModel @Inject constructor(
     override val coroutineContext: CoroutineContext
         get() = Dispatchers.Default
 
-    val filters: LiveData<List<Playlist>> = LiveDataReactiveStreams.fromPublisher(
-        playlistManager.observeAll()
-    )
+    val filters: LiveData<List<Playlist>> = playlistManager.findAllRxFlowable().toLiveData()
 
     val countGenerator = { playlist: Playlist ->
-        playlistManager.countEpisodesRx(playlist, episodeManager, playbackManager).onErrorReturn { 0 }
+        playlistManager.countEpisodesRxFlowable(playlist, episodeManager, playbackManager).onErrorReturn { 0 }
     }
 
     var adapterState: MutableList<Playlist> = mutableListOf()
@@ -66,7 +66,7 @@ class FiltersFragmentViewModel @Inject constructor(
         }
 
         runBlocking(Dispatchers.Default) {
-            playlistManager.updateAll(playlists)
+            playlistManager.updateAllBlocking(playlists)
             if (moved) {
                 analyticsTracker.track(AnalyticsEvent.FILTER_LIST_REORDERED)
             }
@@ -80,5 +80,16 @@ class FiltersFragmentViewModel @Inject constructor(
     fun trackFilterListShown(filterCount: Int) {
         val properties = mapOf(FILTER_COUNT_KEY to filterCount)
         analyticsTracker.track(AnalyticsEvent.FILTER_LIST_SHOWN, properties)
+    }
+
+    fun findPlaylistByUuid(playlistUuid: String, onSuccess: (Playlist) -> Unit) {
+        viewModelScope.launch {
+            val playlist = playlistManager.findByUuid(playlistUuid) ?: return@launch
+            onSuccess(playlist)
+        }
+    }
+
+    fun trackOnCreateFilterTap() {
+        analyticsTracker.track(AnalyticsEvent.FILTER_CREATE_BUTTON_TAPPED)
     }
 }

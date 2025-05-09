@@ -1,6 +1,15 @@
 7.89
 -----
-
+*   New Features
+    *   Podcast recommendations
+        ([#3946](https://github.com/Automattic/pocket-casts-android/pull/3946))
+    *   Support for Podroll 
+        ([#3950](https://github.com/Automattic/pocket-casts-android/pull/3950))
+*   Updates
+    *   Improve contrast of secondary texts on Upgrade page
+        ([#3942](https://github.com/Automattic/pocket-casts-android/pull/3942))
+    *   Improve Accessibility on the Upgrade page
+        ([#3947](https://github.com/Automattic/pocket-casts-android/pull/3947))
 
 7.88
 -----
@@ -16,6 +25,8 @@
         ([#3917](https://github.com/Automattic/pocket-casts-android/pull/3917))
     *   Fix issue with disappearing file image after upload completes
         ([#3910](https://github.com/Automattic/pocket-casts-android/pull/3910))
+    *   Fix issue with image artwork not loading in some cases
+        ([#3970](https://github.com/Automattic/pocket-casts-android/pull/3970))
 
 7.87
 -----
